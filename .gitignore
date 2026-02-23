@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+config.json
+data/
+archive/
+output/
+logs/*
+!logs/.gitkeep
+com.jobmore.discover.plist
+SETUP_COMPLETE.md

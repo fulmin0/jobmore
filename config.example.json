@@ -1,0 +1,76 @@
+{
+  "location": {
+    "based_in": "Your City, State",
+    "open_to": ["All-India", "Delhi NCR preferred for scale companies"],
+    "work_preference": "On-site or Remote acceptable",
+    "search_location": "India"
+  },
+  "professional_background": {
+    "total_years_experience": "8+ years",
+    "breakdown": {
+      "software_development": "2 years",
+      "product_management": "6 years"
+    },
+    "work_history": [
+      {"company": "Company A", "role": "Software Developer", "period": "2018-2019"},
+      {"company": "Company B", "role": "Senior Product Manager", "period": "2019-2025"}
+    ],
+    "career_stage": "Senior PM, targeting PM3 / leadership roles",
+    "note": "Update with your actual experience details"
+  },
+  "target_roles": [
+    "Senior Product Manager",
+    "Product Manager 3",
+    "PM3",
+    "Senior PM",
+    "Product Lead",
+    "Lead Product Manager"
+  ],
+  "domain_preferences": {
+    "primary": "Healthcare",
+    "primary_keywords": ["health", "healthcare", "medical", "clinical", "hospital", "pharma", "diagnostics", "patient", "care"],
+    "secondary": "AI/ML",
+    "secondary_keywords": ["ai", "ml", "machine learning", "artificial intelligence", "llm", "genai", "generative ai", "deep learning"],
+    "open_to": "All other domains"
+  },
+  "company_preferences": {
+    "tier1": ["google", "amazon", "microsoft", "meta", "apple", "flipkart", "swiggy", "zomato", "razorpay", "paytm", "phonepe", "meesho", "byju", "unacademy", "freshworks", "zoho", "infosys", "tcs", "wipro", "hcl", "ola", "urban company"],
+    "ideal": "Tier 1 or large scale companies",
+    "acceptable": ["Pre-IPO scale companies", "Growth-stage companies with structure"],
+    "include_for_practice": "Startups (for interview practice, offers, market benchmarking)",
+    "avoid": ["Small early-stage startups", "On-call roles", "24/7 pressure roles"]
+  },
+  "compensation": {
+    "minimum_salary_lpa": 0,
+    "currency": "INR",
+    "market_year": 2026,
+    "equity": "Not a scoring factor"
+  },
+  "scoring": {
+    "company_scale_weight": 35,
+    "location_weight": 25,
+    "seniority_weight": 20,
+    "industry_weight": 20,
+    "salary_bonus_above_min": 5,
+    "salary_penalty_near_min": -30,
+    "salary_penalty_below": -50,
+    "salary_near_min_threshold": 35
+  },
+  "discovery": {
+    "hours_old": 24,
+    "results_wanted": 100,
+    "top_shown": 5,
+    "next_shown": 20,
+    "retention_days": 7,
+    "run_time_utc": "02:00",
+    "run_time_ist": "07:30",
+    "sources": ["linkedin", "indeed", "naukri", "google", "glassdoor", "zip_recruiter"]
+  },
+  "slack": {
+    "webhook_url": "https://hooks.slack.com/services/YOUR/WEBHOOK/URL",
+    "enabled": false
+  },
+  "output": {
+    "md_path": ""
+  }
+}

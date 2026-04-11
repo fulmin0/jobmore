@@ -1,281 +1,406 @@
 """
-scorer.py - Rule-based job scoring for Phase 1
-No AI/API required. Scores based on company scale, location, seniority, industry.
-Skill match is skipped for Phase 1 (added in Phase 2).
+scorer.py - Rule-based job scoring.
+5 components (title_match + role_scope + company_signal + domain_overlap + location = 100)
+plus standalone adjustments: yoe_fit, salary_adjustment, age_decay.
 """
 
 import re
 from typing import Optional
 
 
+# ---------------------------------------------------------------------------
+# Module-level constants
+# ---------------------------------------------------------------------------
+
+TIER1_COMPANIES = frozenset({
+    # FAANG / global tech
+    "google", "amazon", "amazoncom", "microsoft", "meta", "apple", "netflix",
+    # Indian unicorns / top-tier product companies
+    "flipkart", "swiggy", "zomato", "razorpay", "paytm", "phonepe", "meesho",
+    "freshworks", "zoho", "cred", "groww", "zerodha", "navi", "ola",
+    "urban company", "blinkit", "dunzo", "moengage", "clevertap", "slice",
+    # Global product companies with India PMs
+    "stripe", "atlassian", "salesforce", "hubspot", "zendesk", "datadog",
+    "snowflake", "figma", "notion", "linear",
+    # Healthcare / AI specific (relevant to candidate)
+    "practo", "healthifyme", "1mg", "curefit",
+})
+
+STAFFING_INDICATORS = [
+    "our client", "client of ours", "confidential client", "undisclosed client",
+    "hiring on behalf", "we are hiring on behalf", "on behalf of our client",
+    "staffing", "placement agency", "executive search", "retained search",
+]
+
+DOMAIN_KEYWORDS = {
+    "ai_ml": {
+        "keywords": [
+            "artificial intelligence", "machine learning", "ml platform",
+            "genai", "gen ai", "generative ai", "llm", "large language model",
+            "nlp", "natural language processing", "computer vision",
+            "ai-powered", "ai-driven", "ai features", "model training",
+            "data science", "predictive", "recommendation engine",
+            "intelligent automation", "ai assistant", "copilot", "ai-native",
+            "ai-first",
+        ],
+        "points": 7,
+    },
+    "b2b_saas": {
+        "keywords": [
+            "b2b saas", "b2b software", "enterprise saas", "saas product",
+            "software as a service", "enterprise customers", "smb customers",
+            "product-led growth", "plg", "multi-tenant", "api-first",
+            "developer tools", "enterprise platform", "self-serve", "freemium",
+        ],
+        "points": 6,
+    },
+    "healthcare": {
+        "keywords": [
+            "healthcare", "health tech", "healthtech", "clinical",
+            "patient", "medical", "hospital", "ehr", "emr",
+            "telehealth", "digital health", "life sciences",
+            "pharma", "health data", "care management",
+        ],
+        "points": 5,
+    },
+}
+
+NON_PM_ROLES = [
+    "delivery manager", "project manager", "program manager",
+    "scrum master", "agile coach",
+    "engineering manager", "technical lead", "tech lead",
+    "business analyst", "product analyst",
+    "product owner",
+    "account manager", "operations manager", "marketing manager",
+    "release manager", "portfolio manager",
+    "sdet", "software development engineer",
+    "it pm", "it project", "it program",
+    "general manager", "country manager",
+]
+
+
+# ---------------------------------------------------------------------------
+# Utilities
+# ---------------------------------------------------------------------------
+
 def normalize(text: str) -> str:
     """Lowercase and strip common noise words for matching."""
     if not text:
         return ""
     text = text.lower()
-    for noise in ["pvt ltd", "pvt. ltd.", "private limited", "inc.", "inc", "india", "ltd", "llp", "technologies", "technology", "solutions", "services"]:
+    for noise in ["pvt ltd", "pvt. ltd.", "private limited", "inc.", "inc", "india",
+                  "ltd", "llp", "technologies", "technology", "solutions", "services"]:
         text = text.replace(noise, "")
     return re.sub(r"[^a-z0-9 ]", "", text).strip()
 
 
-def score_company(company_name: str, description: str, config: dict) -> int:
-    """Score company scale/reputation. Max 35 points."""
-    if not company_name:
-        return 12  # Unknown
-
-    name_norm = normalize(company_name)
-    tier1_list = [normalize(c) for c in config["company_preferences"]["tier1"]]
-
-    # Tier 1 check
-    for tier1 in tier1_list:
-        if tier1 and tier1 in name_norm:
-            return 35
-
-    # Headcount signals in description
-    desc_lower = (description or "").lower()
-
-    # Large scale signals
-    large_signals = [
-        r"\b[1-9]\d{3,}\+?\s*employees",     # 1000+ employees
-        r"\bseries [d-z]\b",                  # Series D+
-        r"\bpre.?ipo\b",
-        r"\bunicorn\b",
-        r"\bpublicly listed\b",
-        r"\bnse\b|\bbse\b|\bnasdaq\b|\bnyse\b",  # Listed companies
-    ]
-    for pattern in large_signals:
-        if re.search(pattern, desc_lower):
-            return 25
-
-    # Mid-size signals
-    mid_signals = [
-        r"\b[2-9]\d{2}\+?\s*employees",       # 200-999 employees
-        r"\bseries [b-c]\b",
-        r"\bgrowth.?stage\b",
-    ]
-    for pattern in mid_signals:
-        if re.search(pattern, desc_lower):
-            return 15
-
-    # Startup signals
-    startup_signals = [
-        r"\bseed\b", r"\bpre.?seed\b",
-        r"\bseries a\b",
-        r"\bearly.?stage\b",
-        r"\b[1-9]\d?\+?\s*employees\b",        # < 100 employees
-    ]
-    for pattern in startup_signals:
-        if re.search(pattern, desc_lower):
-            return 8
-
-    return 12  # Unknown
-
-
-def score_location(location: str, config: dict) -> int:
-    """Score location fit. Max 25 points."""
-    if not location:
-        return 10  # Unknown
-
-    loc_lower = location.lower()
-
-    if any(x in loc_lower for x in ["bengaluru", "bangalore"]):
-        return 25
-    if any(x in loc_lower for x in ["delhi", "ncr", "gurugram", "gurgaon", "noida", "faridabad"]):
-        return 20
-    if "remote" in loc_lower:
-        return 18
-    if "hybrid" in loc_lower:
-        return 15
-    if any(x in loc_lower for x in ["mumbai", "hyderabad", "pune", "chennai", "kolkata"]):
-        return 12
-    if "india" in loc_lower:
-        return 10
-    # International
-    return 5
-
-
-def score_seniority(title: str, config: dict) -> int:
-    """Score seniority level match. Max 20 points."""
-    if not title:
-        return 10
-
-    title_lower = title.lower()
-
-    # Exclude non-PM roles early — only applies if "product manager" isn't also in the title
-    non_pm_roles = [
-        "delivery manager", "project manager", "program manager",
-        "scrum master", "agile coach",
-        "engineering manager", "technical lead", "tech lead",
-        "business analyst", "product analyst",
-        "product owner",
-        "account manager", "operations manager", "marketing manager",
-        "release manager", "portfolio manager",
-        "sdet", "software development engineer",
-        "it pm", "it project", "it program",
-        "general manager", "country manager",
-    ]
-    for excluded in non_pm_roles:
-        if excluded in title_lower and "product manager" not in title_lower:
-            return 2
-
-    senior_patterns = ["senior product manager", "senior pm", "pm3", "pm-3", "pm iii", "lead product manager", "lead pm", "product lead", "staff pm", "staff product manager"]
-    for p in senior_patterns:
-        if p in title_lower:
-            return 20
-
-    generic_patterns = ["product manager", " pm "]
-    for p in generic_patterns:
-        if p in title_lower:
-            return 14
-
-    # Stretch (above target)
-    stretch_patterns = ["product director", "director of product", "head of product", "vp product", "group product manager", "gpm"]
-    for p in stretch_patterns:
-        if p in title_lower:
-            return 10
-
-    # Too junior
-    junior_patterns = ["associate product manager", "apm", "junior product manager", "junior pm"]
-    for p in junior_patterns:
-        if p in title_lower:
-            return 4
-
-    # Way too senior
-    exec_patterns = ["chief product officer", "cpo", "vp of product", "vice president"]
-    for p in exec_patterns:
-        if p in title_lower:
-            return 6
-
-    # If the title has no product/pm signal at all, it's probably not a PM role
-    has_product_signal = "product" in title_lower or re.search(r"\bpm\b", title_lower)
-    if not has_product_signal:
-        return 4  # Non-PM manager (not on exclusion list but clearly not target role)
-
-    return 8  # Unknown PM-adjacent role
-
-
-def score_industry(description: str, config: dict) -> int:
-    """Score industry fit. Max 20 points."""
+def extract_min_yoe(description: str) -> Optional[int]:
+    """Extract minimum years of experience from a job description."""
     if not description:
-        return 10
-
+        return None
     desc_lower = description.lower()
-
-    primary_keywords = config["domain_preferences"]["primary_keywords"]
-    secondary_keywords = config["domain_preferences"]["secondary_keywords"]
-
-    has_primary = any(kw in desc_lower for kw in primary_keywords)
-    has_secondary = any(kw in desc_lower for kw in secondary_keywords)
-
-    if has_primary:
-        return 20
-    if has_secondary:
-        return 18
-
-    # SaaS / B2B
-    if any(x in desc_lower for x in ["saas", "b2b", "enterprise software", "platform"]):
-        return 14
-
-    # Fintech
-    if any(x in desc_lower for x in ["fintech", "finance", "banking", "payments", "lending"]):
-        return 12
-
-    # Gaming / unrelated
-    if any(x in desc_lower for x in ["gaming", "game", "entertainment", "media", "fashion", "e-commerce"]):
-        return 6
-
-    return 10  # Other / not determined
+    patterns = [
+        r"(\d+)\s*\+?\s*years?\s+of\s+experience",
+        r"(\d+)\s*\+\s*years?",
+        r"minimum\s+(\d+)\s+years?",
+        r"at\s+least\s+(\d+)\s+years?",
+        r"(\d+)\s*[-–to]+\s*\d+\s+years?",
+    ]
+    values = []
+    for pattern in patterns:
+        for match in re.finditer(pattern, desc_lower):
+            values.append(int(match.group(1)))
+    return min(values) if values else None
 
 
 def extract_salary_lpa(description: str) -> Optional[float]:
-    """
-    Try to extract salary in LPA from job description.
-    Returns None if not found. Handles formats like:
-    - "42 LPA", "42-55 LPA", "Rs 42 lakhs", "INR 42L"
-    """
+    """Extract salary in LPA from job description."""
     if not description:
         return None
-
     patterns = [
-        r"(\d+(?:\.\d+)?)\s*[-–to]+\s*(\d+(?:\.\d+)?)\s*lpa",     # range: 42-55 LPA
-        r"(\d+(?:\.\d+)?)\s*lpa",                                    # single: 42 LPA
-        r"(\d+(?:\.\d+)?)\s*[-–to]+\s*(\d+(?:\.\d+)?)\s*lakh",     # range: 42-55 lakhs
-        r"(\d+(?:\.\d+)?)\s*lakh",                                   # single: 42 lakhs
-        r"inr\s*(\d+(?:\.\d+)?)\s*l",                               # INR 42L
-        r"rs\.?\s*(\d+(?:\.\d+)?)\s*l",                             # Rs 42L
+        r"(\d+(?:\.\d+)?)\s*[-–to]+\s*(\d+(?:\.\d+)?)\s*lpa",
+        r"(\d+(?:\.\d+)?)\s*lpa",
+        r"(\d+(?:\.\d+)?)\s*[-–to]+\s*(\d+(?:\.\d+)?)\s*lakh",
+        r"(\d+(?:\.\d+)?)\s*lakh",
+        r"inr\s*(\d+(?:\.\d+)?)\s*l",
+        r"rs\.?\s*(\d+(?:\.\d+)?)\s*l",
     ]
-
     desc_lower = description.lower()
     for pattern in patterns:
         match = re.search(pattern, desc_lower)
         if match:
             groups = match.groups()
-            # Take average if range
             values = [float(g) for g in groups if g is not None]
             return sum(values) / len(values)
-
     return None
+
+
+# ---------------------------------------------------------------------------
+# Component scorers
+# ---------------------------------------------------------------------------
+
+def score_title_match(title: str) -> int:
+    """
+    Score title tier fit. Max 30, can be negative.
+    Detection order matters — more specific patterns checked first.
+    """
+    if not title:
+        return 10
+
+    title_lower = title.lower()
+
+    # 1. Non-PM exclusion list (unless "product manager" also present)
+    for excluded in NON_PM_ROLES:
+        if excluded in title_lower and "product manager" not in title_lower:
+            return -45
+
+    # 2. Exact target tier
+    senior_patterns = [
+        "senior product manager", "senior pm", "pm3", "pm-3", "pm iii",
+        "lead product manager", "lead pm", "product lead",
+        "staff product manager", "staff pm",
+        "principal product manager", "principal pm",
+    ]
+    for p in senior_patterns:
+        if p in title_lower:
+            return 30
+
+    # 3. Too junior — check before generic so "associate pm" doesn't match "pm"
+    junior_patterns = [
+        "associate product manager", "junior product manager", "junior pm",
+        "product manager i", "pm1", "pm-1",
+    ]
+    for p in junior_patterns:
+        if p in title_lower:
+            return -25
+    # Standalone "apm" word-boundary only (avoid matching "sapm", "capm" etc.)
+    if re.search(r"\bapm\b", title_lower):
+        return -25
+
+    # 4. Way too senior / exec — check before generic
+    exec_patterns = ["chief product officer", "cpo", "vp of product", "vice president of product"]
+    for p in exec_patterns:
+        if p in title_lower:
+            return 5
+
+    # 5. Stretch (above target but not exec)
+    stretch_patterns = [
+        "product director", "director of product", "head of product",
+        "vp product", "group product manager", "gpm",
+    ]
+    for p in stretch_patterns:
+        if p in title_lower:
+            return 12
+
+    # 6. Generic PM
+    if "product manager" in title_lower:
+        return 18
+    if re.search(r"\bpm\b", title_lower):
+        return 18
+
+    # 7. Unknown PM-adjacent
+    if "product" in title_lower:
+        return 8
+
+    # 8. No PM signal at all
+    return -20
+
+
+def score_role_scope(description: str) -> int:
+    """
+    Score ownership/strategy language in the JD. Max 25, floor 0.
+    Three sub-dimensions: ownership language, strategic scope signals, execution penalty.
+    """
+    if not description:
+        return 8  # neutral — no description available
+
+    desc_lower = description.lower()
+
+    # Sub-dimension 1: Ownership language (max 12)
+    strong_ownership = [
+        "define the roadmap", "own the roadmap", "product vision", "product strategy",
+        "end-to-end ownership", "own the product", "full ownership",
+        "shape the direction", "drive the roadmap", "set the vision",
+    ]
+    moderate_ownership = [
+        "roadmap", "vision", "strategy", "ownership", "own", "define", "drive",
+    ]
+    strong_hits = sum(1 for p in strong_ownership if p in desc_lower)
+    moderate_hits = sum(1 for p in moderate_ownership if p in desc_lower)
+    ownership_sub = min(8, strong_hits * 2) + min(4, moderate_hits)
+    ownership_sub = min(12, ownership_sub)
+
+    # Sub-dimension 2: Strategic scope signals (max 8, 1 pt each unique hit)
+    scope_signals = [
+        "cross-functional", "stakeholders", "go-to-market", "north star", "okr",
+        "0 to 1", "0-to-1", "greenfield", "platform strategy", "long-term",
+        "business impact", "product-market fit", "launch a new", "build from scratch",
+        "multi-year", "company strategy", "executive stakeholders",
+    ]
+    scope_sub = min(8, sum(1 for p in scope_signals if p in desc_lower))
+
+    # Sub-dimension 3: Execution-only penalty (-5)
+    execution_penalty = 0
+    if ownership_sub == 0 and scope_sub <= 1:
+        execution_signals = [
+            "assist", "support the product team", "user stories",
+            "maintain the backlog", "groom the backlog", "work under",
+            "report to the product manager",
+        ]
+        if any(p in desc_lower for p in execution_signals):
+            execution_penalty = -5
+
+    total = ownership_sub + scope_sub + execution_penalty
+    return max(0, min(25, total))
+
+
+def score_company_signal(company: str, description: str) -> int:
+    """
+    Score company quality. Max 20.
+    Priority: staffing spam → tier 1 → description signals → unknown floor.
+    """
+    desc_lower = (description or "").lower()
+
+    # 1. Staffing/recruiter spam → 4
+    if any(indicator in desc_lower for indicator in STAFFING_INDICATORS):
+        return 4
+
+    # 2. Tier 1 known company → 20
+    company_norm = normalize(company)
+    for tier1 in TIER1_COMPANIES:
+        if tier1 and tier1 in company_norm:
+            return 20
+
+    # 3. Quality signals from description (additive, cap 14, floor 5)
+    signal_score = 0
+    if re.search(r"\bseries\s+[c-z]\b", desc_lower):
+        signal_score += 5
+    elif re.search(r"\bseries\s+b\b", desc_lower):
+        signal_score += 4
+    elif re.search(r"\bseries\s+a\b", desc_lower):
+        signal_score += 3
+    if re.search(r"\b(ipo|publicly listed|nasdaq|nyse|bse|nse)\b", desc_lower):
+        signal_score += 5
+    if "unicorn" in desc_lower:
+        signal_score += 4
+    if re.search(r"\b(backed by|funded by)\b", desc_lower):
+        signal_score += 2
+    if re.search(r"\b(fortune 500|5000\+\s*employees|10,?000\+\s*employees)\b", desc_lower):
+        signal_score += 3
+    if any(x in desc_lower for x in ["saas", "b2b software", "enterprise software"]):
+        signal_score += 2
+    if any(x in desc_lower for x in ["ai-native", "ai-first"]):
+        signal_score += 2
+
+    return max(5, min(14, signal_score))
+
+
+def score_domain_overlap(description: str) -> int:
+    """
+    Score match to candidate's proven domains. Max 15.
+    Domains: AI/ML (7pts), B2B SaaS (6pts), Healthcare (5pts).
+    """
+    if not description:
+        return 0
+
+    desc_lower = description.lower()
+    total = 0
+    for domain_config in DOMAIN_KEYWORDS.values():
+        if any(kw in desc_lower for kw in domain_config["keywords"]):
+            total += domain_config["points"]
+
+    return min(15, total)
+
+
+def score_location(location: str, config: dict) -> int:
+    """Score location fit. Max 10. Location is no bar."""
+    if not location:
+        return 8
+
+    loc_lower = location.lower()
+
+    if "india" in loc_lower or any(x in loc_lower for x in [
+        "bengaluru", "bangalore", "delhi", "ncr", "gurugram", "gurgaon", "noida",
+        "mumbai", "hyderabad", "pune", "chennai", "kolkata", "faridabad",
+    ]):
+        return 10
+    if "remote" in loc_lower:
+        return 10
+    if "hybrid" in loc_lower:
+        return 9
+    return 8  # International in-office / unknown
+
+
+def score_yoe_fit(description: str) -> int:
+    """
+    YOE fit adjustment (negative or zero). Sweet spot is 5-8 years.
+    """
+    min_yoe = extract_min_yoe(description)
+    if min_yoe is None:
+        return 0
+    if min_yoe <= 3:
+        return -15
+    if min_yoe == 4:
+        return -8
+    if min_yoe <= 8:
+        return 0   # sweet spot: 5-8 years
+    if min_yoe <= 11:
+        return -5
+    return -10     # 12+ years: overqualification signal
 
 
 def apply_salary_adjustment(score: int, description: str, config: dict) -> int:
     """Apply salary bonus/penalty based on mentioned salary."""
     salary = extract_salary_lpa(description)
     if salary is None:
-        return score  # No change if not mentioned
-
+        return score
     min_salary = config["compensation"]["minimum_salary_lpa"]
-    near_min = config["scoring"]["salary_near_min_threshold"]
-
     if salary >= min_salary:
         return score + config["scoring"]["salary_bonus_above_min"]
-    elif salary >= near_min:
-        return score + config["scoring"]["salary_penalty_near_min"]  # negative
     else:
-        return score + config["scoring"]["salary_penalty_below"]  # more negative
+        return score + config["scoring"]["salary_penalty_below"]
 
 
 def check_dealbreakers(title: str, description: str) -> Optional[int]:
     """
-    Check for deal-breaker keywords with context awareness.
-    Returns override score if deal-breaker found, else None.
+    Check for deal-breaker keywords. Returns override score or None.
+    If an override is returned, all component scoring is skipped.
     """
     desc_lower = (description or "").lower()
 
-    # "on-call" - check it's not negated ("no on-call", "not on-call")
-    oncall_matches = [m.start() for m in re.finditer(r"on.?call", desc_lower)]
-    for pos in oncall_matches:
+    # "on-call" — context-aware, ignore if negated
+    for pos in [m.start() for m in re.finditer(r"on.?call", desc_lower)]:
         context = desc_lower[max(0, pos - 50):pos]
         if not re.search(r"\b(no|not|without|zero)\b", context):
             return 20
 
     # "24/7 support" in requirements context
     if re.search(r"24/7\s+support", desc_lower):
-        # Check it's in requirements, not company description
-        req_section = re.search(r"(requirement|responsibilit|you will|you must).{0,500}24/7", desc_lower, re.DOTALL)
-        if req_section:
+        if re.search(r"(requirement|responsibilit|you will|you must).{0,500}24/7", desc_lower, re.DOTALL):
             return 10
 
-    # Startup signals → not a hard block, cap at 50
-    startup_hard = [r"\bpre.?seed\b", r"\bseed stage\b", r"\bfounding team\b", r"\bfirst hire\b"]
-    for pattern in startup_hard:
+    # Very early stage startup signals
+    for pattern in [r"\bpre.?seed\b", r"\bseed stage\b", r"\bfounding team\b", r"\bfirst hire\b"]:
         if re.search(pattern, desc_lower):
             return 50
 
     return None
 
 
+# ---------------------------------------------------------------------------
+# Main scoring entry point
+# ---------------------------------------------------------------------------
+
 def score_job(job: dict, config: dict) -> dict:
     """
-    Main scoring function. Returns job dict with score and breakdown added.
-
-    job dict expected keys: title, company, location, description, url, source, date_posted
+    Score a job. Returns job dict with score, score_breakdown, score_label added.
     """
     title = job.get("title", "")
     company = job.get("company", "")
     location = job.get("location", "")
     description = job.get("description", "")
 
-    # Check deal-breakers first
+    # Dealbreakers override all component scoring
     override = check_dealbreakers(title, description)
     if override is not None:
         job["score"] = override
@@ -284,49 +409,57 @@ def score_job(job: dict, config: dict) -> dict:
         return job
 
     # Component scores
-    company_score = score_company(company, description, config)
+    title_score = score_title_match(title)
+    scope_score = score_role_scope(description)
+    company_score = score_company_signal(company, description)
+    domain_score = score_domain_overlap(description)
     location_score = score_location(location, config)
-    seniority_score = score_seniority(title, config)
-    industry_score = score_industry(description, config)
 
-    # Hard cap: non-PM roles never appear in top 25 regardless of company/location
-    if seniority_score <= 4:
-        job["score"] = 40
-        job["score_breakdown"] = {
-            "company_scale": company_score,
-            "location": location_score,
-            "seniority": seniority_score,
-            "industry": industry_score,
-            "non_pm_role_cap": 40
-        }
-        job["score_label"] = get_label(40)
-        return job
+    base = title_score + scope_score + company_score + domain_score + location_score
 
-    raw_score = company_score + location_score + seniority_score + industry_score
+    # Standalone adjustments
+    yoe_adj = score_yoe_fit(description)
+    salary_adj = apply_salary_adjustment(base + yoe_adj, description, config) - (base + yoe_adj)
 
-    # Salary adjustment
-    final_score = apply_salary_adjustment(raw_score, description, config)
-    final_score = max(0, min(100, final_score))
+    adjusted = base + yoe_adj + salary_adj
+
+    # Age decay: -2 points/day after day 3, capped at -20
+    decay = 0
+    date_found = job.get("date_found", "")
+    if date_found:
+        from datetime import date as date_cls
+        try:
+            age_days = (date_cls.today() - date_cls.fromisoformat(date_found)).days
+            if age_days > 3:
+                decay = min((age_days - 3) * 2, 20)
+        except ValueError:
+            pass
+
+    final_score = max(0, min(100, adjusted - decay))
 
     job["score"] = final_score
     job["score_breakdown"] = {
-        "company_scale": company_score,
+        "title_match": title_score,
+        "role_scope": scope_score,
+        "company_signal": company_score,
+        "domain_overlap": domain_score,
         "location": location_score,
-        "seniority": seniority_score,
-        "industry": industry_score,
-        "salary_adjustment": final_score - raw_score,
-        "total": final_score
+        "yoe_required": extract_min_yoe(description),
+        "yoe_fit": yoe_adj,
+        "salary_adjustment": salary_adj,
+        "age_decay": -decay if decay else 0,
+        "total": final_score,
     }
     job["score_label"] = get_label(final_score)
     return job
 
 
 def get_label(score: int) -> str:
-    if score >= 85:
+    if score >= 80:
         return "Strong match"
-    elif score >= 70:
+    elif score >= 65:
         return "Good match"
-    elif score >= 50:
+    elif score >= 45:
         return "Possible"
     else:
         return "Poor fit"

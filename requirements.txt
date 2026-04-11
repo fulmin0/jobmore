@@ -1,1 +1,3 @@
 python-jobspy>=1.1.79
+streamlit
+pypdf

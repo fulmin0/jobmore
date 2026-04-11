@@ -8,7 +8,7 @@ import re
 import urllib.request
 import urllib.error
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, date
 
 SCRIPT_DIR = Path(__file__).parent
 ALL_SOURCES = ["linkedin", "indeed", "naukri", "google", "glassdoor", "zip_recruiter"]
@@ -229,7 +229,80 @@ def send_slack(message: str, config: dict) -> bool:
         return False
 
 
-def generate_slack_message(top5: list, next20: list, source_results: dict, new_count: int, today_str: str) -> str:
+_STALL_THRESHOLDS = {
+    "want_to_apply": 5,
+    "content_ready": 7,
+    "referral_found": 5,
+    "referral_submitted": 7,
+    "applied": 7,
+    "recruiter_screen": 7,
+    "interview": 7,
+}
+
+_STALL_LABELS = {
+    "want_to_apply": "want to apply — content not started",
+    "content_ready": "content ready — not applied yet",
+    "referral_found": "referral found — submit it",
+    "referral_submitted": "referral submitted — follow up?",
+    "applied": "applied — no update in 7 days (follow up?)",
+    "recruiter_screen": "recruiter screen — no update",
+    "interview": "interview — no update",
+}
+
+_CLOSED_STAGES = {"rejected", "withdrawn"}
+
+
+def get_pipeline_nudge(active_jobs: list) -> str:
+    """
+    Build a pipeline pending-actions string for the Slack digest.
+    Returns empty string if there are no pipeline jobs.
+    """
+    if not active_jobs:
+        return ""
+
+    today = date.today()
+    closed = _CLOSED_STAGES
+
+    active_pipeline_count = sum(
+        1 for j in active_jobs
+        if j.get("pipeline") and j["pipeline"].get("status") not in closed
+    )
+    if not active_pipeline_count:
+        return ""
+
+    # Count stalled jobs per stage
+    stalled: dict[str, int] = {}
+    for job in active_jobs:
+        pipeline = job.get("pipeline")
+        if not pipeline:
+            continue
+        status = pipeline.get("status", "")
+        threshold = _STALL_THRESHOLDS.get(status)
+        if threshold is None:
+            continue
+        date_updated_str = pipeline.get("date_updated", "")
+        if not date_updated_str:
+            continue
+        try:
+            days_stale = (today - date.fromisoformat(date_updated_str)).days
+        except ValueError:
+            continue
+        if days_stale >= threshold:
+            stalled[status] = stalled.get(status, 0) + 1
+
+    lines = [f"*📋 Pipeline: {active_pipeline_count} active job(s)*"]
+    if stalled:
+        for stage in _STALL_THRESHOLDS:  # preserve logical order
+            if stage in stalled:
+                label = _STALL_LABELS.get(stage, stage.replace("_", " "))
+                lines.append(f"• {stalled[stage]} job(s): {label}")
+    else:
+        lines.append("No stalled jobs — keep going!")
+
+    return "\n".join(lines)
+
+
+def generate_slack_message(top5: list, next20: list, source_results: dict, new_count: int, today_str: str, active_jobs: list = None) -> str:
     """Build the daily Slack message."""
     sources_ok = sum(1 for r in source_results.values() if r.get("status") == "success")
     sources_total = len(source_results)
@@ -240,14 +313,17 @@ def generate_slack_message(top5: list, next20: list, source_results: dict, new_c
     failed = [s for s, r in source_results.items() if r.get("status") != "success"]
     source_note = f"⚠️ Failed sources: {', '.join(failed)}" if failed else f"✅ All {sources_total} sources OK"
 
+    pipeline_section = get_pipeline_nudge(active_jobs or [])
+    pipeline_block = f"\n\n{pipeline_section}" if pipeline_section else ""
+
     message = f"""*🔍 Jobmore Daily — {today_str}*
 {source_note} · {new_count} new jobs found
 
-*Top 5 Matches:*
+*Top Matches (last 3 days, 80+):*
 {top5_text}
 
 *Also check (6-10):*
-{next20_text}
+{next20_text}{pipeline_block}
 
 _Full list → output/data/jobs_found.md_"""
 
@@ -263,7 +339,8 @@ def generate_report(
     new_count: int,
     run_time: datetime,
     total_count: int = 0,
-    output_base: Path = None
+    active_jobs: list = None,
+    output_base: Path = None,
 ) -> None:
     """
     Main reporter entry point.
@@ -288,7 +365,7 @@ def generate_report(
 
     # 3. Slack (optional)
     print("\n--- Sending Slack report ---")
-    slack_msg = generate_slack_message(top5, next20, source_results, new_count, today_str)
+    slack_msg = generate_slack_message(top5, next20, source_results, new_count, today_str, active_jobs)
     send_slack(slack_msg, config)
 
     # Print to terminal always (useful for manual runs)

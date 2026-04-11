@@ -11,7 +11,7 @@ import json
 import sys
 import argparse
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Resolve paths
 SCRIPT_DIR = Path(__file__).parent
@@ -95,55 +95,61 @@ def run_jobspy(config: dict, test_mode: bool = False) -> tuple[list, dict]:
     all_jobs = []
 
     search_term = " OR ".join(config.get("target_roles", ["Senior Product Manager"]))
-    search_location = config["location"].get("search_location", "India")
+    search_locations = config["location"].get("search_locations", config["location"].get("search_location", ["India"]))
+    if isinstance(search_locations, str):
+        search_locations = [search_locations]
 
     results_wanted = 20 if test_mode else discovery["results_wanted"]
     hours_old = discovery["hours_old"]
 
-    print(f"Running discovery: {len(discovery['sources'])} sources, last {hours_old}h, {results_wanted} results max per source")
+    print(f"Running discovery: {len(discovery['sources'])} sources x {len(search_locations)} locations, last {hours_old}h, {results_wanted} results max per source/location")
 
-    for source in discovery["sources"]:
-        print(f"  Fetching from {source}...", end=" ", flush=True)
-        try:
-            jobs = scrape_jobs(
-                site_name=[source],
-                search_term=search_term,
-                location=search_location,
-                results_wanted=results_wanted,
-                hours_old=hours_old,
-                country_indeed=search_location,
-                linkedin_fetch_description=True
-            )
+    for search_location in search_locations:
+        for source in discovery["sources"]:
+            label = f"{source}/{search_location}"
+            print(f"  Fetching from {label}...", end=" ", flush=True)
+            try:
+                # country_indeed must be a real country code — use "India" as fallback for non-country strings like "Remote"
+                country = search_location if search_location.lower() not in ("remote", "worldwide") else "India"
+                jobs = scrape_jobs(
+                    site_name=[source],
+                    search_term=search_term,
+                    location=search_location,
+                    results_wanted=results_wanted,
+                    hours_old=hours_old,
+                    country_indeed=country,
+                    linkedin_fetch_description=True
+                )
 
-            if jobs is None or (hasattr(jobs, '__len__') and len(jobs) == 0):
-                print(f"0 jobs")
-                source_results[source] = {"status": "empty", "count": 0}
-                continue
+                if jobs is None or (hasattr(jobs, '__len__') and len(jobs) == 0):
+                    print(f"0 jobs")
+                    source_results[label] = {"status": "empty", "count": 0}
+                    continue
 
-            # Convert DataFrame rows to dicts
-            job_list = []
-            for _, row in jobs.iterrows():
-                job = {
-                    "title": str(row.get("title", "")),
-                    "company": str(row.get("company", "")),
-                    "location": str(row.get("location", "")),
-                    "description": str(row.get("description", "")),
-                    "job_url": str(row.get("job_url", "")),
-                    "date_posted": str(row.get("date_posted", "")),
-                    "site": source,
-                    "salary_source": str(row.get("min_amount", "")) or str(row.get("max_amount", ""))
-                }
-                job_list.append(job)
+                # Convert DataFrame rows to dicts
+                job_list = []
+                for _, row in jobs.iterrows():
+                    job = {
+                        "title": str(row.get("title", "")),
+                        "company": str(row.get("company", "")),
+                        "location": str(row.get("location", "")),
+                        "description": str(row.get("description", "")),
+                        "job_url": str(row.get("job_url", "")),
+                        "date_posted": str(row.get("date_posted", "")),
+                        "site": source,
+                        "salary_source": str(row.get("min_amount", "")) or str(row.get("max_amount", ""))
+                    }
+                    job_list.append(job)
 
-            count = len(job_list)
-            print(f"{count} jobs")
-            source_results[source] = {"status": "success", "count": count}
-            all_jobs.extend(job_list)
+                count = len(job_list)
+                print(f"{count} jobs")
+                source_results[label] = {"status": "success", "count": count}
+                all_jobs.extend(job_list)
 
-        except Exception as e:
-            err = str(e)[:100]
-            print(f"FAILED ({err})")
-            source_results[source] = {"status": "error", "error": err, "count": 0}
+            except Exception as e:
+                err = str(e)[:100]
+                print(f"FAILED ({err})")
+                source_results[label] = {"status": "error", "error": err, "count": 0}
 
     return all_jobs, source_results
 
@@ -173,10 +179,12 @@ def save_job_details(jobs: list, date_str: str, job_details_dir: Path) -> None:
 ## Score Breakdown
 | Factor | Score |
 |--------|-------|
-| Company Scale | {breakdown.get('company_scale', '—')} / 35 |
-| Location | {breakdown.get('location', '—')} / 25 |
-| Seniority | {breakdown.get('seniority', '—')} / 20 |
-| Industry | {breakdown.get('industry', '—')} / 20 |
+| Title Match | {breakdown.get('title_match', '—')} / 30 |
+| Role Scope | {breakdown.get('role_scope', '—')} / 25 |
+| Company Signal | {breakdown.get('company_signal', '—')} / 20 |
+| Domain Overlap | {breakdown.get('domain_overlap', '—')} / 15 |
+| Location | {breakdown.get('location', '—')} / 10 |
+| YOE Fit | {breakdown.get('yoe_fit', 0):+d} (req: {breakdown.get('yoe_required', '?')} yrs) |
 | Salary Adjustment | {breakdown.get('salary_adjustment', 0):+d} |
 | **Total** | **{breakdown.get('total', job.get('score', 0))} / 100** |
 
@@ -221,6 +229,11 @@ def archive_expired(config: dict, jobs_data: dict) -> int:
         days_old = (today - found_date).days
         action = job.get("action", "none")
 
+        # Never archive jobs that have been saved to the pipeline or rated
+        if job.get("pipeline") or job.get("feedback"):
+            still_active.append(job)
+            continue
+
         if days_old >= retention_days and action == "none":
             expired.append(job)
             archived += 1
@@ -261,7 +274,7 @@ def main():
 
     config = load_config()
     md_path = config.get("output", {}).get("md_path", "").strip()
-    OUTPUT_BASE = Path(md_path) if md_path else PROJECT_BASE / "output"
+    OUTPUT_BASE = PROJECT_BASE / "output"
     job_details_dir = OUTPUT_BASE / "job_details"
 
     today = datetime.now()
@@ -295,7 +308,9 @@ def main():
         job["date_found"] = today_str
         job["action"] = "none"
 
-    # Re-score existing active jobs with latest scoring logic
+    # Re-score existing active jobs with latest scoring logic.
+    # score_job() only writes score/score_breakdown/score_label, so pipeline
+    # and feedback fields survive the re-score unchanged.
     jobs_data["active_jobs"] = score_all(jobs_data["active_jobs"], config)
 
     # Merge with new jobs (avoid re-adding already-seen jobs)
@@ -324,9 +339,17 @@ def main():
     save_jobs(jobs_data)
 
     # Generate report (Slack + markdown + log)
-    top5 = jobs_data["active_jobs"][:5]
-    next20 = jobs_data["active_jobs"][5:25]
-    generate_report(top5, next20, source_results, config, archived_count, len(new_jobs), today, len(jobs_data["active_jobs"]), output_base=OUTPUT_BASE)
+    # Filter top matches: last 3 days + score >= 80
+    cutoff_date = (today - timedelta(days=3)).strftime("%Y-%m-%d")
+    recent_strong = [
+        j for j in jobs_data["active_jobs"]
+        if j.get("date_found", "") >= cutoff_date and j.get("score", 0) >= 80
+    ]
+    others = [j for j in jobs_data["active_jobs"] if j not in recent_strong]
+    report_jobs = recent_strong + others
+    top5 = report_jobs[:5]
+    next20 = report_jobs[5:25]
+    generate_report(top5, next20, source_results, config, archived_count, len(new_jobs), today, len(jobs_data["active_jobs"]), active_jobs=jobs_data["active_jobs"], output_base=OUTPUT_BASE)
 
     print("\nDone.")
 

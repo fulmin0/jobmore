@@ -72,5 +72,14 @@
   },
   "output": {
     "md_path": ""
+  },
+  "personal": {
+    "full_name": "Your Full Name",
+    "email": "your@email.com",
+    "phone": "+1-000-000-0000",
+    "phone_link": "tel:+10000000000",
+    "linkedin_url": "https://www.linkedin.com/in/yourprofile/",
+    "linkedin_display": "linkedin.com/in/yourprofile/",
+    "pdf_name": "Resume_YourName"
   }
 }

@@ -23,6 +23,7 @@ ARCHIVE_DIR = PROJECT_BASE / "archive" / "expired_jobs"
 sys.path.insert(0, str(SCRIPT_DIR))
 from scorer import score_all
 from reporter import generate_report
+from calibrate import run_calibration
 
 
 def load_config() -> dict:
@@ -307,6 +308,11 @@ def main():
     for job in scored_jobs:
         job["date_found"] = today_str
         job["action"] = "none"
+
+    # Derive per-company scoring adjustments from accumulated feedback,
+    # then re-score all existing jobs so the overrides take effect today.
+    overrides = run_calibration(jobs_data)
+    config["feedback_overrides"] = overrides
 
     # Re-score existing active jobs with latest scoring logic.
     # score_job() only writes score/score_breakdown/score_label, so pipeline

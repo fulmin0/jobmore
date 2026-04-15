@@ -26,6 +26,16 @@ TIER1_COMPANIES = frozenset({
     "practo", "healthifyme", "1mg", "curefit",
 })
 
+TIER2_COMPANIES = frozenset({
+    # Large established non-tech brands with genuine digital product orgs
+    "decathlon", "ikea", "zara", "uniqlo",
+    "tata", "reliance retail", "nykaa", "myntra",
+    "marks and spencer", "marks & spencer",
+    "walmart", "carrefour",
+    "nestle", "unilever", "hindustan unilever",
+    "hdfc", "icici", "axis bank", "kotak",
+})
+
 STAFFING_INDICATORS = [
     "our client", "client of ours", "confidential client", "undisclosed client",
     "hiring on behalf", "we are hiring on behalf", "on behalf of our client",
@@ -41,7 +51,8 @@ DOMAIN_KEYWORDS = {
             "ai-powered", "ai-driven", "ai features", "model training",
             "data science", "predictive", "recommendation engine",
             "intelligent automation", "ai assistant", "copilot", "ai-native",
-            "ai-first",
+            "ai-first", "ai-augmented", "integrate ai", "ai integration",
+            "ai to improve",
         ],
         "points": 7,
     },
@@ -60,6 +71,14 @@ DOMAIN_KEYWORDS = {
             "patient", "medical", "hospital", "ehr", "emr",
             "telehealth", "digital health", "life sciences",
             "pharma", "health data", "care management",
+        ],
+        "points": 5,
+    },
+    "ecommerce": {
+        "keywords": [
+            "ecommerce", "e-commerce", "d2c", "direct to consumer", "direct-to-consumer",
+            "omnichannel", "omni-channel", "shopify", "retail tech",
+            "digital commerce", "online retail", "marketplace platform",
         ],
         "points": 5,
     },
@@ -139,7 +158,7 @@ def extract_salary_lpa(description: str) -> Optional[float]:
 # Component scorers
 # ---------------------------------------------------------------------------
 
-def score_title_match(title: str) -> int:
+def score_title_match(title: str, min_yoe: Optional[int] = None) -> int:
     """
     Score title tier fit. Max 30, can be negative.
     Detection order matters — more specific patterns checked first.
@@ -192,10 +211,14 @@ def score_title_match(title: str) -> int:
         if p in title_lower:
             return 12
 
-    # 6. Generic PM
+    # 6. Generic PM — boost to 24 if YOE squarely in sweet spot (5–8 yrs)
     if "product manager" in title_lower:
+        if min_yoe is not None and 5 <= min_yoe <= 8:
+            return 24
         return 18
     if re.search(r"\bpm\b", title_lower):
+        if min_yoe is not None and 5 <= min_yoe <= 8:
+            return 24
         return 18
 
     # 7. Unknown PM-adjacent
@@ -270,6 +293,11 @@ def score_company_signal(company: str, description: str) -> int:
     for tier1 in TIER1_COMPANIES:
         if tier1 and tier1 in company_norm:
             return 20
+
+    # 2b. Tier 2 — large established brand with real digital ops → 12
+    for tier2 in TIER2_COMPANIES:
+        if tier2 and tier2 in company_norm:
+            return 12
 
     # 3. Quality signals from description (additive, cap 14, floor 5)
     signal_score = 0
@@ -361,12 +389,52 @@ def apply_salary_adjustment(score: int, description: str, config: dict) -> int:
         return score + config["scoring"]["salary_penalty_below"]
 
 
-def check_dealbreakers(title: str, description: str) -> Optional[int]:
+# US state abbreviations (all 50 + DC)
+_US_STATES_RE = re.compile(
+    r",\s*(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT"
+    r"|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\b"
+)
+
+
+def _is_us_onsite_no_visa(location: str, description: str) -> bool:
+    """True if job is US-only on-site with no visa sponsorship mentioned."""
+    loc_lower = (location or "").lower()
+    desc_lower = (description or "").lower()
+
+    # Must be a US location
+    is_us = bool(_US_STATES_RE.search(location or "")) or "united states" in loc_lower
+    if not is_us:
+        return False
+
+    # Exempt if remote or hybrid (check both location field and description)
+    remote_signals = ("remote", "hybrid", "work from home", "wfh")
+    if any(s in loc_lower for s in remote_signals):
+        return False
+    if any(s in desc_lower for s in remote_signals):
+        return False
+
+    # Exempt if visa sponsorship is explicitly offered
+    visa_signals = (
+        "visa sponsorship", "work authorization", "work visa",
+        "h-1b", "h1b", "immigration support", "relocation assistance",
+        "will sponsor", "we sponsor",
+    )
+    if any(s in desc_lower for s in visa_signals):
+        return False
+
+    return True
+
+
+def check_dealbreakers(title: str, description: str, location: str = "") -> Optional[int]:
     """
     Check for deal-breaker keywords. Returns override score or None.
     If an override is returned, all component scoring is skipped.
     """
     desc_lower = (description or "").lower()
+
+    # US on-site with no visa sponsorship — hard disqualify
+    if _is_us_onsite_no_visa(location, description):
+        return 0
 
     # "on-call" — context-aware, ignore if negated
     for pos in [m.start() for m in re.finditer(r"on.?call", desc_lower)]:
@@ -401,15 +469,17 @@ def score_job(job: dict, config: dict) -> dict:
     description = job.get("description", "")
 
     # Dealbreakers override all component scoring
-    override = check_dealbreakers(title, description)
+    override = check_dealbreakers(title, description, location)
     if override is not None:
+        reason = "US on-site, no visa sponsorship" if override == 0 else None
         job["score"] = override
-        job["score_breakdown"] = {"deal_breaker_override": override}
+        job["score_breakdown"] = {"deal_breaker_override": override, **({"reason": reason} if reason else {})}
         job["score_label"] = get_label(override)
         return job
 
     # Component scores
-    title_score = score_title_match(title)
+    min_yoe_val = extract_min_yoe(description)
+    title_score = score_title_match(title, min_yoe=min_yoe_val)
     scope_score = score_role_scope(description)
     company_score = score_company_signal(company, description)
     domain_score = score_domain_overlap(description)
@@ -437,6 +507,15 @@ def score_job(job: dict, config: dict) -> dict:
 
     final_score = max(0, min(100, adjusted - decay))
 
+    # Feedback-derived company adjustment (from calibrate.py overrides)
+    feedback_adj = 0
+    fb_overrides = config.get("feedback_overrides", {}).get("company_adjustments", {})
+    if fb_overrides:
+        company_norm = normalize(company)
+        feedback_adj = fb_overrides.get(company_norm, 0)
+        if feedback_adj:
+            final_score = max(1, min(100, final_score + feedback_adj))
+
     job["score"] = final_score
     job["score_breakdown"] = {
         "title_match": title_score,
@@ -444,10 +523,11 @@ def score_job(job: dict, config: dict) -> dict:
         "company_signal": company_score,
         "domain_overlap": domain_score,
         "location": location_score,
-        "yoe_required": extract_min_yoe(description),
+        "yoe_required": min_yoe_val,
         "yoe_fit": yoe_adj,
         "salary_adjustment": salary_adj,
         "age_decay": -decay if decay else 0,
+        **({"feedback_adj": feedback_adj} if feedback_adj else {}),
         "total": final_score,
     }
     job["score_label"] = get_label(final_score)
@@ -455,6 +535,8 @@ def score_job(job: dict, config: dict) -> dict:
 
 
 def get_label(score: int) -> str:
+    if score == 0:
+        return "Disqualified"
     if score >= 80:
         return "Strong match"
     elif score >= 65:

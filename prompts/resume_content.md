@@ -77,6 +77,12 @@ Actions:
 - `REFRAME` — same underlying work, shift framing to match the JD
 - `REPLACE` — weak for this JD, pull a stronger bullet from `data/experience/{role}.md`
 
+**Pillar mapping**: For each bullet, note which JD pillar or HM signal it serves. After scoring, verify every major JD pillar has at least one bullet. If a pillar has zero coverage, flag it as a gap.
+
+**Unique signal check**: Before marking any bullet as REPLACE, check if it's the only bullet covering a particular JD signal (e.g., "No-Bug culture", "on-ground presence", "circular commerce"). If dropping it creates a signal gap, flag the trade-off explicitly — the user decides whether to accept the gap or keep the bullet.
+
+**Domain translation**: When the user's domain differs from the target JD's domain, score the bullet's *transferable signal*, not its literal domain. "Prescription adherence" scores low for a retail JD literally, but the underlying behavior (user completes a recommended purchase) scores high. Reframe in the target domain's vocabulary: "prescription adherence" → "purchase completion" or "subscriber retention"; "risk exposure" → "portfolio value"; "MRR" → "platform GMV" (only when the metric genuinely maps).
+
 Present the score table to the user before producing the final set.
 
 **4c. Produce the merged final set per role**
@@ -101,8 +107,13 @@ Below each bullet, add 1-2 sentences on what to expand on if asked in an intervi
 ### Step 5: Review & Iterate
 - Present the Resume-Ready section (final merged set) + talking points
 - Run dimension check: are all 5 dimensions covered across the full resume?
+- Run JD pillar coverage check: is every major JD pillar addressable from at least one bullet?
 - Identify remaining weak spots, suggest additions
 - When user provides additional context, append to experience files under `## Additional Context`
+- **Dropped bullets → talking points**: Any bullet that was REPLACED should be moved to the talking points section with context on when to use it in interviews. These stories are still valuable for verbal defense.
+- **Conversion metric framing**: When absolute percentage changes look small (e.g., 2.5%→3%), present both absolute and relative framing (e.g., "20% uplift") — let the user choose which reads stronger.
+- **Phygital/omnichannel prefix tags**: For JDs emphasizing phygital, consider bold directional prefixes on bullets that show the physical↔digital bridge (e.g., `\textbf{Store→Digital:}`, `\textbf{In-store AI:}`, `\textbf{Digital→Store:}`). Present as an option — the user decides.
+- **System design prep**: For jobs requiring system design, offer to create a prep file at `output/jobs/{Company}_{Title}/system_design_prep.md` — 2 paragraphs per relevant experience point covering the design challenge, patterns to know, and the target company analog.
 - Iterate until user is satisfied
 - Final step: user runs `python3 scripts/build_resume.py --job "{Company}::{Title}"` to compile the PDF
 

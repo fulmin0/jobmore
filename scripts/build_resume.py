@@ -38,23 +38,74 @@ Unicode character substitution:
 """
 
 import argparse
+import copy
+import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import textwrap
 import time
 from collections import defaultdict
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).parent.parent
+
+# ---------------------------------------------------------------------------
+# Personal config — loaded once at import time from config.json
+# ---------------------------------------------------------------------------
+
+def _load_personal() -> dict:
+    config_path = PROJECT_ROOT / 'config.json'
+    if not config_path.exists():
+        print('Error: config.json not found. Copy config.example.json → config.json and fill in your details.')
+        sys.exit(1)
+    cfg = json.loads(config_path.read_text(encoding='utf-8'))
+    personal = cfg.get('personal')
+    if not personal:
+        print("Error: 'personal' section missing from config.json — see config.example.json for required fields.")
+        sys.exit(1)
+    required = ['full_name', 'email', 'phone', 'phone_link', 'linkedin_url', 'linkedin_display', 'pdf_name']
+    missing = [k for k in required if not personal.get(k)]
+    if missing:
+        print(f"Error: config.json personal section is missing fields: {', '.join(missing)}")
+        sys.exit(1)
+    return personal
+
+PERSONAL = _load_personal()
+PDF_NAME = PERSONAL['pdf_name']
+
+
+def substitute_personal(tex: str) -> str:
+    """Replace %%PERSONAL_*%% placeholders in a LaTeX string."""
+    replacements = {
+        '%%PERSONAL_NAME%%':            PERSONAL['full_name'],
+        '%%PERSONAL_EMAIL%%':           PERSONAL['email'],
+        '%%PERSONAL_PHONE%%':           PERSONAL['phone'],
+        '%%PERSONAL_PHONE_LINK%%':      PERSONAL['phone_link'],
+        '%%PERSONAL_LINKEDIN_URL%%':    PERSONAL['linkedin_url'],
+        '%%PERSONAL_LINKEDIN_DISPLAY%%': PERSONAL['linkedin_display'],
+    }
+    for placeholder, value in replacements.items():
+        tex = tex.replace(placeholder, value)
+    return tex
 JOBS_DIR = PROJECT_ROOT / "output" / "jobs"
 READY_DIR = PROJECT_ROOT / "output" / "ready"
 TEMPLATE_PATH = PROJECT_ROOT / "templates" / "resume_base.tex"
 
 # Keys that inject a single line of text rather than a bullet list.
 # Extend this set when new text-block inject regions are added to the template.
-TEXT_BLOCK_KEYS = {'summary', 'skills', 'bob_subheading', 'apollo_subheading'}
+TEXT_BLOCK_KEYS = {'summary', 'skills', 'bob_subheading', 'apollo_subheading', 'mouve_title'}
+
+# ---------------------------------------------------------------------------
+# Line budget constants
+# Calibrated empirically via --calibrate. Update after running:
+#   python3 scripts/build_resume.py --calibrate --job "Company::Title"
+# Working limits are 90% of the empirical maximums.
+# ---------------------------------------------------------------------------
+CALIBRATED_CHARS_PER_LINE: int = 82   # 90% of empirical max (92); calibrated 2026-04-14
+CALIBRATED_MAX_LINES: int = 17        # 90% of empirical max (19); calibrated 2026-04-14
 
 
 # ---------------------------------------------------------------------------
@@ -319,7 +370,7 @@ def inject_into_template(template_text: str, parsed: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def compile_pdf(tex_path: Path, out_dir: Path) -> Path:
-    """Compile .tex → PDF using Tectonic. Returns path to Resume_Archit.pdf."""
+    """Compile .tex → PDF using Tectonic. Returns path to {PDF_NAME}.pdf."""
     result = subprocess.run(
         ['tectonic', str(tex_path), '--outdir', str(out_dir)],
         capture_output=True, text=True
@@ -331,7 +382,7 @@ def compile_pdf(tex_path: Path, out_dir: Path) -> Path:
 
     # Tectonic names output {stem}.pdf
     compiled = out_dir / (tex_path.stem + '.pdf')
-    final = out_dir / 'Resume_Archit.pdf'
+    final = out_dir / f'{PDF_NAME}.pdf'
     if compiled.exists() and compiled != final:
         compiled.rename(final)
     return final
@@ -353,7 +404,7 @@ def get_page_count(pdf_path: Path):
 
 def pruning_loop(parsed: dict, job_dir: Path) -> Path:
     """Interactively remove bullets until the PDF fits one page."""
-    pdf_path = job_dir / 'Resume_Archit.pdf'
+    pdf_path = job_dir / f'{PDF_NAME}.pdf'
 
     while True:
         # Display current bullets with numbers
@@ -419,6 +470,49 @@ def pruning_loop(parsed: dict, job_dir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Line budget pre-flight check
+# ---------------------------------------------------------------------------
+
+def check_line_budget(parsed: dict) -> tuple[int, list[str]]:
+    """
+    Estimate total bullet content lines and return (total_lines, warnings).
+
+    Uses CALIBRATED_CHARS_PER_LINE as the working line width (already 90% of
+    empirical max). Only bullet content is counted — structural elements
+    (role headers, section headers, name block) are fixed overhead already
+    accounted for in CALIBRATED_MAX_LINES.
+
+    Returns (total_lines, warnings) where warnings is empty if within budget.
+    """
+    warnings: list[str] = []
+    total_lines = 0
+
+    for key in parsed.get('role_order', []):
+        bullets = parsed['roles'][key]['bullets']
+        for bullet in bullets:
+            # Strip LaTeX commands for length estimation:
+            #   \cmd{text} → text,  \cmd → ''
+            clean = re.sub(r'\\[a-zA-Z]+\{([^}]*)\}', r'\1', bullet)
+            clean = re.sub(r'\\[a-zA-Z]+\b', '', clean)
+            clean = re.sub(r'\s+', ' ', clean).strip()
+            lines = max(1, len(textwrap.wrap(clean, width=CALIBRATED_CHARS_PER_LINE)))
+            total_lines += lines
+            if lines > 2:
+                preview = bullet[:60] + ('…' if len(bullet) > 60 else '')
+                warnings.append(
+                    f'  [{key}] {lines}-line bullet — consider trimming: {preview}'
+                )
+
+    if total_lines > CALIBRATED_MAX_LINES:
+        warnings.insert(
+            0,
+            f'Total estimated content lines: {total_lines} (budget: {CALIBRATED_MAX_LINES}) — likely 2+ pages',
+        )
+
+    return total_lines, warnings
+
+
+# ---------------------------------------------------------------------------
 # Job directory resolution
 # ---------------------------------------------------------------------------
 
@@ -462,6 +556,133 @@ def find_job_dir(job_key=None, file_path=None):
 
 
 # ---------------------------------------------------------------------------
+# Calibration
+# ---------------------------------------------------------------------------
+
+_SAMPLE_TEXT = (
+    'Built integrated shipped designed managed drove launched scaled delivered '
+    'product feature workflow channel integration platform analytics pipeline '
+)
+
+
+def _build_calibration_pdf(parsed: dict, cal_dir: Path) -> Path:
+    """Compile a PDF from a modified parsed dict into cal_dir. Returns PDF path."""
+    template_text = TEMPLATE_PATH.read_text(encoding='utf-8')
+    template_text = substitute_personal(template_text)
+    injected = inject_into_template(template_text, parsed)
+    fonts_abs = str(TEMPLATE_PATH.parent / 'fonts') + '/'
+    injected = injected.replace('Path = fonts/', f'Path = {fonts_abs}')
+    tex_path = cal_dir / 'resume.tex'
+    tex_path.write_text(injected, encoding='utf-8')
+    result = subprocess.run(
+        ['tectonic', str(tex_path), '--outdir', str(cal_dir)],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print('Tectonic failed during calibration:')
+        print(result.stderr or result.stdout)
+        sys.exit(1)
+    compiled = cal_dir / (tex_path.stem + '.pdf')
+    final = cal_dir / f'{PDF_NAME}.pdf'
+    if compiled.exists() and compiled != final:
+        compiled.rename(final)
+    return final
+
+
+def _make_text(n: int) -> str:
+    """Generate representative placeholder text of approximately n chars."""
+    full = (_SAMPLE_TEXT * ((n // len(_SAMPLE_TEXT)) + 2))[:n]
+    return full.rstrip()
+
+
+def calibrate_resume(job_dir: Path, md_path: Path) -> None:
+    """
+    Empirically calibrate CALIBRATED_CHARS_PER_LINE and CALIBRATED_MAX_LINES
+    by running binary-search compilations through Tectonic.
+
+    Phase 1: Add 1-line bullets until page count hits 2 → finds max content lines.
+    Phase 2: Binary search char length of one bullet until it wraps → finds chars per line.
+
+    Prints the constants to paste into this file.
+    """
+    SHORT = _make_text(20)   # Definitely fits 1 line at any reasonable font size
+
+    cal_dir = job_dir / '_calibration'
+    cal_dir.mkdir(exist_ok=True)
+
+    # Minimal baseline: 1 short bullet per role.
+    # Exclude text-block keys (bob_subheading, apollo_subheading) — they appear in
+    # role_order because they match the **...** header pattern, but their content is
+    # handled by the text_blocks injection path, not the bullet injection path.
+    parsed = copy.deepcopy(parse_resume_ready(md_path))
+    role_keys = [k for k in parsed['role_order'] if k not in TEXT_BLOCK_KEYS]
+    for key in role_keys:
+        parsed['roles'][key]['bullets'] = [SHORT]
+    first_role = role_keys[0]
+
+    # --- Phase 1: max content lines ---
+    print('\nStep 1/2 — Calibrating max content lines per page:')
+    for iteration in range(80):
+        pdf = _build_calibration_pdf(parsed, cal_dir)
+        pages = get_page_count(pdf)
+        if pages is None:
+            print('Error: pypdf required for calibration. Run: pip install pypdf')
+            shutil.rmtree(cal_dir, ignore_errors=True)
+            sys.exit(1)
+        total = sum(len(parsed['roles'][k]['bullets']) for k in role_keys)
+        print(f'  {total:3d} lines → {pages} page(s)')
+        if pages > 1:
+            max_lines = total - 1
+            parsed['roles'][first_role]['bullets'].pop()   # restore 1-page state
+            print(f'  → Max content lines: {max_lines}')
+            break
+        parsed['roles'][first_role]['bullets'].append(SHORT)
+    else:
+        print('Error: calibration did not converge — check template.')
+        shutil.rmtree(cal_dir, ignore_errors=True)
+        sys.exit(1)
+
+    # --- Phase 2: chars per line ---
+    # Need room for exactly 1 more line:
+    #   baseline = max_lines-1 bullets (1 page with room for 1 more line)
+    #   + 1-line test bullet  → max_lines total   → 1 page  (fits)
+    #   + 2-line test bullet  → max_lines+1 total → 2 pages (wraps)
+    # Remove 1 more bullet to create the (max_lines-1) baseline.
+    parsed['roles'][first_role]['bullets'].pop()
+    print('\nStep 2/2 — Calibrating chars per line:')
+    lo, hi = 10, 200
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        test_parsed = copy.deepcopy(parsed)
+        test_parsed['roles'][first_role]['bullets'].append(_make_text(mid))
+        pdf = _build_calibration_pdf(test_parsed, cal_dir)
+        pages = get_page_count(pdf)
+        fits = pages is not None and pages <= 1
+        print(f'  {mid:3d} chars → {pages} page(s) → {"fits  " if fits else "wraps"}')
+        if fits:
+            lo = mid
+        else:
+            hi = mid - 1
+
+    chars_per_line = lo
+    print(f'  → Max chars per line: {chars_per_line}')
+
+    shutil.rmtree(cal_dir, ignore_errors=True)
+
+    working_chars = int(chars_per_line * 0.9)
+    working_lines = int(max_lines * 0.9)
+
+    print(f'\n{"=" * 60}')
+    print('Calibration results:')
+    print(f'  Max chars per line:  {chars_per_line}  →  working limit: {working_chars}  (× 0.9)')
+    print(f'  Max content lines:   {max_lines}  →  working limit: {working_lines}  (× 0.9)')
+    print(f'\nUpdate constants in scripts/build_resume.py:')
+    print(f'  CALIBRATED_CHARS_PER_LINE = {working_chars}')
+    print(f'  CALIBRATED_MAX_LINES      = {working_lines}')
+    print('=' * 60)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -477,6 +698,8 @@ def main():
                         help='Direct path to resume_content.md')
     parser.add_argument('--list-keys', action='store_true',
                         help='Print marker keys for this file and exit (no build)')
+    parser.add_argument('--calibrate', action='store_true',
+                        help='Empirically calibrate line-budget constants and print them (no resume built)')
     args = parser.parse_args()
 
     if not args.job and not args.file:
@@ -490,6 +713,17 @@ def main():
         sys.exit(1)
 
     parsed = parse_resume_ready(md_path)
+
+    # --calibrate: measure line-budget constants and exit
+    if args.calibrate:
+        if not TEMPLATE_PATH.exists():
+            print(f'Error: template not found at {TEMPLATE_PATH}')
+            sys.exit(1)
+        if shutil.which('tectonic') is None:
+            print("Error: 'tectonic' not found. Install with: brew install tectonic")
+            sys.exit(1)
+        calibrate_resume(job_dir, md_path)
+        return
 
     # --list-keys: print keys from content file + baseline counts from template
     if args.list_keys:
@@ -523,6 +757,7 @@ def main():
 
     # Inject into template
     template_text = TEMPLATE_PATH.read_text(encoding='utf-8')
+    template_text = substitute_personal(template_text)
     injected = inject_into_template(template_text, parsed)
     # Resolve relative font path to absolute so tectonic can find fonts
     # regardless of where the injected .tex is compiled from
@@ -533,6 +768,16 @@ def main():
     tex_path = job_dir / 'resume.tex'
     tex_path.write_text(injected, encoding='utf-8')
     print(f'Wrote: {tex_path.relative_to(PROJECT_ROOT)}')
+
+    # Pre-flight line budget check
+    total_lines, budget_warnings = check_line_budget(parsed)
+    if budget_warnings:
+        print(f'\n⚠  Line budget ({total_lines}/{CALIBRATED_MAX_LINES} lines):')
+        for w in budget_warnings:
+            print(w)
+        print()
+    else:
+        print(f'Line budget: {total_lines}/{CALIBRATED_MAX_LINES} lines — OK')
 
     # Compile
     if shutil.which('tectonic') is None:
@@ -552,13 +797,13 @@ def main():
         # Write final injected .tex to reflect any pruning
         injected = inject_into_template(TEMPLATE_PATH.read_text(encoding='utf-8'), parsed)
         tex_path.write_text(injected, encoding='utf-8')
-        pdf_path = job_dir / 'Resume_Archit.pdf'
+        pdf_path = job_dir / f'{PDF_NAME}.pdf'
     else:
         print(f'  {pages or "?"} page(s) — good.')
 
     # Copy to output/ready/
     READY_DIR.mkdir(exist_ok=True)
-    ready_pdf = READY_DIR / 'Resume_Archit.pdf'
+    ready_pdf = READY_DIR / f'{PDF_NAME}.pdf'
     shutil.copy(str(pdf_path), str(ready_pdf))
     print(f'\nResume ready: {ready_pdf.relative_to(PROJECT_ROOT)}')
 

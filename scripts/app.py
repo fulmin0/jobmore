@@ -209,7 +209,7 @@ def discover_page():
         st.divider()
         st.subheader("Filters")
         show_today_only = st.checkbox("Today's jobs only", value=False)
-        show_low_score = st.checkbox("Show low-score jobs (< 50)", value=False)
+        show_low_score = st.checkbox("Show low-score & disqualified jobs (< 50)", value=False)
         score_min, score_max = st.slider("Score range", 0, 100, (0, 100))
 
         all_sources = sorted({

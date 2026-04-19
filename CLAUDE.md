@@ -10,11 +10,16 @@ Job search pipeline: discovery (scraping + scoring), pipeline tracking (Streamli
 | `data/jobs_found.json` | Single source of truth for all jobs (schema in MEMORY.md) |
 | `data/experience/{company}_{role}.md` | One file per role — lines 1-4: company/role/start/end, line 5+: detailed bullets. Enrichment appended under `## Additional Context` |
 | `data/resumes/{date}.pdf` | Resume snapshots (e.g. `20260409.pdf`) |
-| `output/jobs/{Company}_{Title}/resume_content.md` | Generated resume content per target job |
-| `output/jobs/{Company}_{Title}/resume.tex` | Injected LaTeX file for this job |
-| `output/jobs/{Company}_{Title}/{pdf_name}.pdf` | Compiled PDF for this job (`pdf_name` from config.json `personal.pdf_name`) |
+| `output/jobs/{id:04d}_{Company}_{Title}/resume_content.md` | Generated resume content per target job |
+| `output/jobs/{id:04d}_{Company}_{Title}/resume.tex` | Injected LaTeX file for this job |
+| `output/jobs/{id:04d}_{Company}_{Title}/{pdf_name}.pdf` | Compiled PDF for this job (`pdf_name` from config.json `personal.pdf_name`) |
+| `output/jobs/{id:04d}_{Company}_{Title}/notes.md` | HM signals, key stories, gaps, interview prep — source of truth; `pipeline.notes` in JSON is a 120-char truncated summary |
+| `output/jobs/{id:04d}_{Company}_{Title}/cover_letter.tex` | LaTeX cover letter; compiled to `cover_letter.pdf` via Tectonic using `templates/cover_letter_base.tex` |
+| `output/jobs/{id:04d}_{Company}_{Title}/elevator_pitch.md` | LinkedIn DM / InMail pitch to HM — ~4 short paragraphs, plain prose |
+| `output/jobs/applied/{id:04d}_{Company}_{Title}/` | Same structure; folder auto-moved here when status transitions to `applied` |
 | `output/ready/{pdf_name}.pdf` | Latest built resume — always the "send this" copy |
 | `templates/resume_base.tex` | Master LaTeX template (copy from Overleaf, add INJECT markers) |
+| `templates/cover_letter_base.tex` | Master LaTeX cover letter template — copy to job directory, fill in body |
 | `config.json` | Local config — **not committed**. Contains a `personal` section with name/email/phone/LinkedIn/pdf_name. **Do not read or log the `personal` fields** — they are injected automatically by `build_resume.py` at compile time. |
 | `prompts/` | Workflow templates loaded on demand |
 
@@ -51,6 +56,12 @@ Job search pipeline: discovery (scraping + scoring), pipeline tracking (Streamli
     4. Each role's first bullet has visible separation from the role header line (not cramped).
     5. Summary line and role subheadings match the bullet framing — if bullets say "post-purchase ops", summary and subheadings cannot say "AI products".
     6. Confirm 1 page (build script page-count check handles this, but verify visually).
+- **Job Intelligence Package**: Before creating any application content for a job (resume, elevator pitch, cover letter) — check if `output/jobs/{dir}/job_intelligence.md` exists. If not, run `prompts/job_intelligence.md` to generate it first. This file contains JD pillars, story bank rankings, domain correctness flags, and notation rules — all artifact prompts read it instead of re-deriving the analysis. Re-run only when the JD changes or new experience files are added.
+- **Application collateral** (cover letter + elevator pitch): When the user asks to write a cover letter, elevator pitch, or application materials for a job — create the relevant files in the job's output directory.
+  - `cover_letter.tex` — read `prompts/cover_letter.md` for the full workflow. Do not create before the resume is reviewed and marked usable.
+  - `elevator_pitch.md` — read `prompts/elevator_pitch.md` for the full workflow.
+  - **Correction logging**: When any artifact is approved after corrections — before closing: (a) log each version + rejection reason to `## Content iterations` in `job_intelligence.md`, (b) identify the root-cause rule gap, (c) update the corresponding prompts file. Approval after zero corrections = log "v1 → approved". This is not optional.
+  - **Cross-job learning**: After every 3 jobs reach `applied` status, scan `## Content iterations` across all notes/intelligence files. Any correction reason that appears 2+ times is a systemic gap — update the prompts file.
 - **Pipeline jobs**: When working with pipeline stages or job schema, refer to MEMORY.md for the schema definition.
 
 ## Running things

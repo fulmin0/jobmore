@@ -247,10 +247,12 @@ def _fix_unicode_chars(text: str) -> str:
 
     - ₹  →  \\rupee{}          (tfrupee package, already loaded in template)
     - →  →  $\\rightarrow$     (math-mode arrow, font-independent)
+    - ↔  →  $\\leftrightarrow$    (math-mode double arrow)
     - ~N →  ${\\sim}$N         (tilde-as-approximation before a digit only)
     """
     text = text.replace('₹', r'\rupee{}')
     text = text.replace('→', r'$\rightarrow$')
+    text = text.replace('↔', r'$\leftrightarrow$')
     text = re.sub(r'~(\d)', lambda m: r'${\sim}$' + m.group(1), text)
     return text
 
@@ -455,7 +457,10 @@ def pruning_loop(parsed: dict, job_dir: Path) -> Path:
 
         # Re-inject and recompile
         tex_path = job_dir / 'resume.tex'
-        injected = inject_into_template(TEMPLATE_PATH.read_text(encoding='utf-8'), parsed)
+        template_text = substitute_personal(TEMPLATE_PATH.read_text(encoding='utf-8'))
+        injected = inject_into_template(template_text, parsed)
+        fonts_abs = str(TEMPLATE_PATH.parent / 'fonts') + '/'
+        injected = injected.replace('Path = fonts/', f'Path = {fonts_abs}')
         tex_path.write_text(injected, encoding='utf-8')
 
         print('Recompiling...')
@@ -516,17 +521,34 @@ def check_line_budget(parsed: dict) -> tuple[int, list[str]]:
 # Job directory resolution
 # ---------------------------------------------------------------------------
 
+def _all_job_dirs():
+    """Yield all job dirs from output/jobs/ (excluding the applied/ subdir itself)."""
+    for d in JOBS_DIR.iterdir():
+        if d.is_dir() and d.name != 'applied':
+            yield d
+    applied = JOBS_DIR / 'applied'
+    if applied.exists():
+        for d in applied.iterdir():
+            if d.is_dir():
+                yield d
+
+
 def find_job_dir(job_key=None, file_path=None):
-    """Return (job_dir: Path, md_path: Path)."""
+    """Return (job_dir: Path, md_path: Path).
+
+    job_key can be:
+      - A numeric ID (int or string):  --job 32
+      - Company::Title format:         --job "Decathlon::Digital Product Manager"
+    """
     if file_path:
         p = Path(file_path).resolve()
         if not p.exists():
             print(f'Error: file not found: {file_path}')
             sys.exit(1)
-        # If already inside output/jobs/{dir}/, use that dir
-        if p.parent.parent == JOBS_DIR.resolve():
+        # Inside output/jobs/{dir}/ or output/jobs/applied/{dir}/
+        if p.parent.parent in (JOBS_DIR.resolve(), (JOBS_DIR / 'applied').resolve()):
             return p.parent, p
-        # Legacy path (output/resume_content/) — derive folder from stem
+        # Legacy path — derive folder from stem
         stem = p.stem
         job_dir = JOBS_DIR / stem
         job_dir.mkdir(parents=True, exist_ok=True)
@@ -536,19 +558,34 @@ def find_job_dir(job_key=None, file_path=None):
         return job_dir, dest
 
     if job_key:
+        # Numeric ID lookup: find folder whose name starts with "{id:04d}_"
+        if re.fullmatch(r'\d+', str(job_key).strip()):
+            prefix = f"{int(job_key):04d}_"
+            for d in _all_job_dirs():
+                if d.name.startswith(prefix):
+                    return d, d / 'resume_content.md'
+            print(f"Error: no job folder found for ID '{job_key}'")
+            print('Available jobs:')
+            for d in sorted(_all_job_dirs()):
+                print(f'  {d.name}')
+            sys.exit(1)
+
+        # Company::Title lookup
         folder_name = normalize_job_folder(job_key)
         exact = JOBS_DIR / folder_name
         if exact.exists():
             return exact, exact / 'resume_content.md'
-        # Case-insensitive fallback
-        for d in JOBS_DIR.iterdir():
-            if d.is_dir() and d.name.lower() == folder_name.lower():
+        for d in _all_job_dirs():
+            if d.name.lower() == folder_name.lower():
+                return d, d / 'resume_content.md'
+            # Also match against the part after the ID prefix (e.g. "0032_Decathlon_...")
+            stem = re.sub(r'^\d{4}_', '', d.name)
+            if stem.lower() == folder_name.lower():
                 return d, d / 'resume_content.md'
         print(f"Error: no job folder found for '{job_key}' (tried '{folder_name}')")
         print('Available jobs:')
-        for d in sorted(JOBS_DIR.iterdir()):
-            if d.is_dir():
-                print(f'  {d.name}')
+        for d in sorted(_all_job_dirs()):
+            print(f'  {d.name}')
         sys.exit(1)
 
     print('Error: provide --job or --file')
@@ -795,7 +832,10 @@ def main():
         print(f'  Resume is {pages} page(s) — needs pruning.')
         pruning_loop(parsed, job_dir)
         # Write final injected .tex to reflect any pruning
-        injected = inject_into_template(TEMPLATE_PATH.read_text(encoding='utf-8'), parsed)
+        template_text = substitute_personal(TEMPLATE_PATH.read_text(encoding='utf-8'))
+        injected = inject_into_template(template_text, parsed)
+        fonts_abs = str(TEMPLATE_PATH.parent / 'fonts') + '/'
+        injected = injected.replace('Path = fonts/', f'Path = {fonts_abs}')
         tex_path.write_text(injected, encoding='utf-8')
         pdf_path = job_dir / f'{PDF_NAME}.pdf'
     else:

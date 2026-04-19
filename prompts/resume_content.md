@@ -1,5 +1,6 @@
 # Resume Content Generation — Workflow Template
 
+
 ## Role
 Act as an expert senior PM hiring consultant. You have deep knowledge of PM hiring rubrics across company tiers (FAANG, growth-stage, startup), and you generate tailored resume bullets that match what hiring managers and ATS systems look for.
 
@@ -39,13 +40,21 @@ Adapt emphasis per company tier. Not every dimension needs equal weight — cali
 - Run `python3 scripts/build_resume.py --list-keys --job "{Company}::{Title}"` to see available marker keys and baseline bullet counts per role. **These counts are your line budget per role — do not exceed them.**
 - If any input is missing, ask the user to create it before proceeding
 
-### Step 2: JD Deep Dive
-- Read the target job's full description from `data/jobs_found.json`
-- Classify company tier (FAANG / growth-stage / startup) to calibrate the framework
-- Extract: must-have requirements, nice-to-have differentiators, domain signals, seniority expectations
-- Map each requirement to one or more of the 5 dimensions
+### Step 2: JD Deep Dive + Intelligence Package
+
+**First**: check if `output/jobs/{dir}/job_intelligence.md` exists.
+- **If it exists**: read it. Use the pillars, story bank rankings, and notation flag directly — skip re-deriving them below.
+- **If it doesn't exist**: run `prompts/job_intelligence.md` to generate it, then return here.
+
+From the intelligence file:
+- Pillars table → use as the JD requirement map for scoring
+- Story bank → use rankings to guide REPLACE candidate selection (prefer score ≥ 2 stories)
+- Notation flag → apply to all reframed bullets
+
+Then continue:
+- Classify company tier (FAANG / growth-stage / startup) to calibrate the 5-dimension framework
 - Read current resume PDF — assess existing positioning and gaps
-- Output: **JD Analysis** — requirements mapped to dimensions + gap assessment vs current resume
+- Output: **JD Analysis** — pillars mapped to dimensions + gap assessment vs current resume
 
 ### Step 3: Experience Mapping + Targeted Questions
 - Read all files in `data/experience/`
@@ -78,6 +87,10 @@ Actions:
 - `REPLACE` — weak for this JD, pull a stronger bullet from `data/experience/{role}.md`
 
 **Pillar mapping**: For each bullet, note which JD pillar or HM signal it serves. After scoring, verify every major JD pillar has at least one bullet. If a pillar has zero coverage, flag it as a gap.
+
+**Differentiator vs. table stakes**: Use the classification from `job_intelligence.md`. Within each role's bullet set, order differentiator bullets first. Never order by JD reading order or frequency — JDs front-load generic requirements and bury differentiators.
+
+**Coverage efficiency**: When selecting REPLACE candidates from experience files, prefer stories that cover 2+ JD pillars simultaneously. Check the story bank — stories with score ≥ 2 are preferred over score 1 stories covering the same pillar.
 
 **Unique signal check**: Before marking any bullet as REPLACE, check if it's the only bullet covering a particular JD signal (e.g., "No-Bug culture", "on-ground presence", "circular commerce"). If dropping it creates a signal gap, flag the trade-off explicitly — the user decides whether to accept the gap or keep the bullet.
 
@@ -116,6 +129,7 @@ Below each bullet, add 1-2 sentences on what to expand on if asked in an intervi
 - **System design prep**: For jobs requiring system design, offer to create a prep file at `output/jobs/{Company}_{Title}/system_design_prep.md` — 2 paragraphs per relevant experience point covering the design challenge, patterns to know, and the target company analog.
 - Iterate until user is satisfied
 - Final step: user runs `python3 scripts/build_resume.py --job "{Company}::{Title}"` to compile the PDF
+- **After approval**: log each version + rejection reason to `## Content iterations / Resume` in `job_intelligence.md`. If corrections were needed, identify the rule gap and update this prompts file before closing.
 
 ---
 

@@ -19,6 +19,9 @@ SCRIPT_DIR = Path(__file__).parent
 PROJECT_BASE = SCRIPT_DIR.parent
 DATA_FILE = PROJECT_BASE / "data" / "jobs_found.json"
 CONFIG_PATH = PROJECT_BASE / "config.json"
+JOBS_DIR = PROJECT_BASE / "output" / "jobs"
+APPLIED_DIR = JOBS_DIR / "applied"
+ARCHIVE_DIR = JOBS_DIR / "archive"
 
 sys.path.insert(0, str(SCRIPT_DIR))
 from discover import normalize_company, normalize_title
@@ -93,6 +96,69 @@ def fetch_linkedin_job(url: str) -> dict | None:
     }
 
 
+# ─── Job directory & notes helpers ───────────────────────────────────────────
+
+def get_job_dir(job: dict) -> Path | None:
+    """Return the job's output folder by ID prefix, then fuzzy company name."""
+    job_id = job.get("id")
+    if job_id:
+        prefix = f"{int(job_id):04d}_"
+        for base in [JOBS_DIR, APPLIED_DIR, ARCHIVE_DIR]:
+            if not base.exists():
+                continue
+            for d in base.iterdir():
+                if d.is_dir() and d.name.startswith(prefix):
+                    return d
+    # Fuzzy fallback: first alphanum token of company name
+    company = job.get("company", "")
+    tokens = re.findall(r'[a-zA-Z0-9]+', company)
+    if not tokens:
+        return None
+    fw = tokens[0].lower()
+    for base in [JOBS_DIR, APPLIED_DIR, ARCHIVE_DIR]:
+        if not base.exists():
+            continue
+        matches = [d for d in base.iterdir() if d.is_dir() and d.name.lower().startswith(fw)]
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
+def read_notes(job: dict) -> str:
+    job_dir = get_job_dir(job)
+    if job_dir:
+        notes_file = job_dir / "notes.md"
+        if notes_file.exists():
+            return notes_file.read_text(encoding="utf-8")
+    return job.get("pipeline", {}).get("notes", "")
+
+
+def write_notes(job: dict, content: str) -> None:
+    job_dir = get_job_dir(job)
+    if job_dir:
+        (job_dir / "notes.md").write_text(content, encoding="utf-8")
+
+
+def move_job_dir(job: dict, target_dir: Path) -> None:
+    """Safely move the job's folder to target_dir if it exists and isn't already there."""
+    job_dir = get_job_dir(job)
+    if job_dir and job_dir.parent.resolve() != target_dir.resolve():
+        target_dir.mkdir(exist_ok=True)
+        dest = target_dir / job_dir.name
+        if not dest.exists():
+            job_dir.rename(dest)
+        else:
+            # If destination exists, we could merge or handle collision;
+            # for now, just don't overwrite if it's already there (rare case).
+            pass
+
+
+def next_job_id(jobs_data: dict) -> int:
+    nid = jobs_data.get("next_id", 1)
+    jobs_data["next_id"] = nid + 1
+    return nid
+
+
 # ─── Data helpers ─────────────────────────────────────────────────────────────
 
 def load_jobs() -> dict:
@@ -145,6 +211,7 @@ def update_pipeline_status(jobs_data: dict, jkey: str, new_status: str, notes: s
         return
     job = jobs_data["active_jobs"][idx]
     today = today_iso()
+    old_status = job.get("pipeline", {}).get("status")
     if "pipeline" not in job:
         job["pipeline"] = {
             "status": new_status,
@@ -154,13 +221,19 @@ def update_pipeline_status(jobs_data: dict, jkey: str, new_status: str, notes: s
             "history": [{"status": new_status, "date": today}],
         }
     else:
-        old_status = job["pipeline"].get("status")
         if old_status != new_status:
             job["pipeline"]["history"].append({"status": new_status, "date": today})
         job["pipeline"]["status"] = new_status
         job["pipeline"]["date_updated"] = today
         if notes:
             job["pipeline"]["notes"] = notes
+    # Auto-move folder based on status transitions
+    if new_status in ["rejected", "withdrawn"]:
+        move_job_dir(job, ARCHIVE_DIR)
+    elif new_status in ["applied", "recruiter_screen", "interview", "offer"]:
+        move_job_dir(job, APPLIED_DIR)
+    elif new_status in ["want_to_apply", "content_ready", "referral_found", "referral_submitted"]:
+        move_job_dir(job, JOBS_DIR)
     save_jobs(jobs_data)
 
 
@@ -394,6 +467,7 @@ def pipeline_page():
                         # Build full job object
                         today = today_iso()
                         new_job = {
+                            "id": next_job_id(jobs_data),
                             "title": fetched["title"],
                             "company": fetched["company"],
                             "location": fetched["location"],
@@ -471,6 +545,8 @@ def pipeline_page():
                     pass
 
             stale_tag = "  ⚠️ Stale" if is_stale else ""
+            job_id = job.get("id", "")
+            id_tag = f"#{job_id} · " if job_id else ""
 
             with st.container():
                 col1, col2, col3 = st.columns([3, 1, 2])
@@ -478,13 +554,11 @@ def pipeline_page():
                 with col1:
                     st.markdown(f"**{job.get('company', '—')}** — {job.get('title', '—')}{stale_tag}")
                     st.caption(
-                        f"Score: {job.get('score', 0)}  ·  "
+                        f"{id_tag}Score: {job.get('score', 0)}  ·  "
                         f"Added: {date_added_str}  ·  "
                         f"Updated: {days_stale}d ago  ·  "
                         f"{days_in_pipeline}d in pipeline"
                     )
-                    if notes:
-                        st.caption(f"📝 {notes}")
 
                 with col2:
                     sources = job.get("sources", [])
@@ -502,17 +576,31 @@ def pipeline_page():
                             format_func=lambda x: x.replace("_", " ").title(),
                             label_visibility="collapsed",
                         )
-                        new_notes = st.text_input(
-                            "Notes",
-                            value=notes,
-                            placeholder="Notes...",
-                            label_visibility="collapsed",
-                        )
                         if st.form_submit_button("Update"):
                             data = load_jobs()
-                            update_pipeline_status(data, jk, new_status, new_notes)
+                            update_pipeline_status(data, jk, new_status)
                             st.success("Updated!")
                             st.rerun()
+
+            # Notes — read from notes.md, write back on save
+            current_notes = read_notes(job)
+            with st.expander("📝 Notes", expanded=bool(current_notes)):
+                with st.form(key=f"notes_form_{stage}_{i}"):
+                    new_notes = st.text_area(
+                        "notes",
+                        value=current_notes,
+                        height=200,
+                        label_visibility="collapsed",
+                    )
+                    if st.form_submit_button("Save notes"):
+                        write_notes(job, new_notes)
+                        # Keep a short summary in JSON for quick reference
+                        data = load_jobs()
+                        idx2 = find_job_idx(data["active_jobs"], jk)
+                        if idx2 >= 0 and "pipeline" in data["active_jobs"][idx2]:
+                            data["active_jobs"][idx2]["pipeline"]["notes"] = new_notes[:120]
+                            save_jobs(data)
+                        st.success("Notes saved!")
 
             st.divider()
 

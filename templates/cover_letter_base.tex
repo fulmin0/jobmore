@@ -1,0 +1,79 @@
+%-------------------------
+% Cover Letter in LaTeX
+%-------------------------
+
+\documentclass[letterpaper,12pt]{article}
+
+\usepackage[empty]{fullpage}
+\usepackage[xetex]{hyperref}
+\usepackage{fancyhdr}
+\usepackage{fontspec}
+\setmainfont{Fontin-Regular.otf}[
+  Path = /Users/fulmin/Develop/jobmore/templates/fonts/,
+  BoldFont = Fontin-Bold.otf,
+  ItalicFont = Fontin-Italic.otf,
+  SmallCapsFont = Fontin-SmallCaps.otf
+]
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyfoot{}
+\renewcommand{\headrulewidth}{0pt}
+\renewcommand{\footrulewidth}{0pt}
+
+% Margins — match resume
+\addtolength{\oddsidemargin}{-0.50in}
+\addtolength{\evensidemargin}{-0.375in}
+\addtolength{\textwidth}{1in}
+\addtolength{\topmargin}{-.5in}
+\addtolength{\textheight}{1.0in}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{10pt}
+
+\hypersetup{
+  pdfborderstyle={/W 0},
+  colorlinks=true,
+  urlcolor=blue
+}
+
+%-------------------------------------------
+\begin{document}
+
+%----------HEADING-----------------
+% INJECT: PERSONAL_NAME, PERSONAL_EMAIL, PERSONAL_PHONE, PERSONAL_LINKEDIN
+\textbf{\Large Your Name} \hfill
+\href{mailto:your.email@example.com}{your.email@example.com}
+$\vert$ \href{tel:+91-XXXX-XXXXXX}{+91-XXXX-XXXXXX}
+$\vert$ \href{https://linkedin.com/in/yourprofile/}{linkedin.com/in/yourprofile/}
+
+\vspace{4pt}
+\rule{\textwidth}{0.4pt}
+\vspace{2pt}
+
+%----------DATE & RECIPIENT-----------------
+April 2026
+
+Hiring Manager \\
+Decathlon \\
+India
+
+%----------SALUTATION-----------------
+Dear Hiring Manager,
+
+%----------BODY-----------------
+PARAGRAPH ONE — Hook: specific product observation or personal connection to Decathlon.
+
+PARAGRAPH TWO — Professional proof: strongest parallel from experience (phygital, omnichannel, AI).
+
+PARAGRAPH THREE — Why Decathlon, why now. Honest gap acknowledgement if relevant.
+
+PARAGRAPH FOUR (optional) — Close: ask for conversation, not just consideration.
+
+%----------SIGN-OFF-----------------
+Warm regards,
+
+\vspace{24pt}
+Your Name
+
+\end{document}

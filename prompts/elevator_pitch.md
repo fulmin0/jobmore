@@ -1,5 +1,6 @@
 # Elevator Pitch — Workflow
 
+> **Model**: Designed to run as a **Haiku subagent**. All reasoning (pillar classification, domain correctness, story ranking) is pre-done in `job_intelligence.md`. This prompt is mechanical: read the package, select stories by score, apply the format. Do not re-derive what the intelligence package already contains.
 
 ## Role
 

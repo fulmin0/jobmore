@@ -1,5 +1,6 @@
 # Resume Content Generation — Workflow Template
 
+> **Model routing**: Steps 1-2 (setup + JD analysis / intelligence package generation) run in the **Sonnet session**. Steps 3-5 (experience mapping, scoring, bullet generation) run as a **Haiku subagent** — all pillar reasoning is pre-done in `job_intelligence.md`; Haiku reads it and executes the mechanical steps.
 
 ## Role
 Act as an expert senior PM hiring consultant. You have deep knowledge of PM hiring rubrics across company tiers (FAANG, growth-stage, startup), and you generate tailored resume bullets that match what hiring managers and ATS systems look for.

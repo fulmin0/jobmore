@@ -8,6 +8,9 @@ Run with:  streamlit run scripts/app.py
 import json
 import re
 import sys
+import shutil
+import subprocess
+import time
 import requests
 import pandas as pd
 import streamlit as st
@@ -21,6 +24,7 @@ DATA_FILE = PROJECT_BASE / "data" / "jobs_found.json"
 CONFIG_PATH = PROJECT_BASE / "config.json"
 JOBS_DIR = PROJECT_BASE / "output" / "jobs"
 APPLIED_DIR = JOBS_DIR / "applied"
+REFERRAL_DIR = JOBS_DIR / "referral"
 ARCHIVE_DIR = JOBS_DIR / "archive"
 
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -103,7 +107,7 @@ def get_job_dir(job: dict) -> Path | None:
     job_id = job.get("id")
     if job_id:
         prefix = f"{int(job_id):04d}_"
-        for base in [JOBS_DIR, APPLIED_DIR, ARCHIVE_DIR]:
+        for base in [JOBS_DIR, APPLIED_DIR, REFERRAL_DIR, ARCHIVE_DIR]:
             if not base.exists():
                 continue
             for d in base.iterdir():
@@ -115,7 +119,7 @@ def get_job_dir(job: dict) -> Path | None:
     if not tokens:
         return None
     fw = tokens[0].lower()
-    for base in [JOBS_DIR, APPLIED_DIR, ARCHIVE_DIR]:
+    for base in [JOBS_DIR, APPLIED_DIR, REFERRAL_DIR, ARCHIVE_DIR]:
         if not base.exists():
             continue
         matches = [d for d in base.iterdir() if d.is_dir() and d.name.lower().startswith(fw)]
@@ -154,7 +158,10 @@ def move_job_dir(job: dict, target_dir: Path) -> None:
 
 
 def next_job_id(jobs_data: dict) -> int:
+    existing = {j.get("id") for j in jobs_data.get("active_jobs", [])}
     nid = jobs_data.get("next_id", 1)
+    while nid in existing:
+        nid += 1
     jobs_data["next_id"] = nid + 1
     return nid
 
@@ -232,7 +239,9 @@ def update_pipeline_status(jobs_data: dict, jkey: str, new_status: str, notes: s
         move_job_dir(job, ARCHIVE_DIR)
     elif new_status in ["applied", "recruiter_screen", "interview", "offer"]:
         move_job_dir(job, APPLIED_DIR)
-    elif new_status in ["want_to_apply", "content_ready", "referral_found", "referral_submitted"]:
+    elif new_status in ["referral_found", "referral_submitted"]:
+        move_job_dir(job, REFERRAL_DIR)
+    elif new_status in ["want_to_apply", "content_ready"]:
         move_job_dir(job, JOBS_DIR)
     save_jobs(jobs_data)
 
@@ -248,6 +257,248 @@ def save_feedback(jobs_data: dict, jkey: str, rating: str, notes: str, flags: li
         "score_flags": flags,
     }
     save_jobs(jobs_data)
+
+
+# ─── Content generation ──────────────────────────────────────────────────────
+
+CONTENT_POLL_INTERVAL = 30  # seconds between file/subprocess checks
+
+CONTENT_ISSUE_TAGS = [
+    "Too formal",
+    "Missing key story",
+    "Wrong domain framing",
+    "Doesn't match JD pillar",
+    "Off-brand tone",
+    "Wrong length",
+]
+
+
+def make_job_dir_name(job: dict) -> str:
+    job_id = int(job.get("id", 0))
+    company = re.sub(r'[^\w\s]', '', job.get("company", "")).strip()
+    title = re.sub(r'[^\w\s]', '', job.get("title", "")).strip()
+    slug = f"{company}_{title}".replace(" ", "_")
+    slug = re.sub(r'_+', '_', slug)
+    return f"{job_id:04d}_{slug}"
+
+
+def _get_resume_pdf_path(job_dir: Path) -> Path | None:
+    try:
+        with open(CONFIG_PATH) as f:
+            config = json.load(f)
+        pdf_name = config.get("personal", {}).get("pdf_name", "")
+        if pdf_name:
+            p = job_dir / f"{pdf_name}.pdf"
+            return p if p.exists() else None
+    except Exception:
+        pass
+    pdfs = [p for p in job_dir.glob("*.pdf") if "cover" not in p.name.lower()]
+    return pdfs[0] if pdfs else None
+
+
+def get_content_status(job: dict) -> dict:
+    job_dir = get_job_dir(job)
+    if not job_dir:
+        return {"job_intelligence": False, "elevator_pitch": False, "cover_letter": False, "resume": False}
+    return {
+        "job_intelligence": (job_dir / "job_intelligence.md").exists(),
+        "elevator_pitch": (job_dir / "elevator_pitch.md").exists(),
+        "cover_letter": (job_dir / "cover_letter.pdf").exists(),
+        "resume": _get_resume_pdf_path(job_dir) is not None,
+    }
+
+
+def _build_generation_prompt(job: dict, job_dir: Path) -> str:
+    company = job.get("company", "")
+    title = job.get("title", "")
+    jd = (job.get("description", "") or "")[:4000]
+    rel = job_dir.relative_to(PROJECT_BASE)
+    return (
+        f"Generate all job application content for {company} — {title}.\n\n"
+        f"Output directory: {rel}\n"
+        f"Job description:\n{jd}\n\n"
+        "Run in order:\n"
+        f"1. Read prompts/job_intelligence.md and follow the workflow → write {rel}/job_intelligence.md\n"
+        f"2. Read prompts/elevator_pitch.md and follow the workflow → write {rel}/elevator_pitch.md\n"
+        f"3. Read prompts/cover_letter.md and follow the workflow → write artifacts to {rel}/\n"
+        f"4. Read prompts/resume_content.md and follow the workflow → write {rel}/resume_content.md and build resume PDF\n\n"
+        "Read data/experience/*.md before generating any content."
+    )
+
+
+def start_content_generation(job: dict) -> None:
+    jk = job_key(job)
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        st.error("`claude` CLI not found in PATH. Run `which claude` to locate it.")
+        return
+    job_dir = get_job_dir(job)
+    if not job_dir:
+        dir_name = make_job_dir_name(job)
+        job_dir = JOBS_DIR / dir_name
+        job_dir.mkdir(parents=True, exist_ok=True)
+    prompt = _build_generation_prompt(job, job_dir)
+    proc = subprocess.Popen(
+        [claude_bin, "--print", "--permission-mode", "bypassPermissions", prompt],
+        cwd=str(PROJECT_BASE),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    now = time.time()
+    st.session_state[f"gen_proc_{jk}"] = proc
+    st.session_state[f"gen_start_{jk}"] = now
+    st.session_state[f"last_poll_{jk}"] = now
+
+
+def save_artifact_feedback(job_dir: Path, artifact: str, tags: list, notes: str, approved: bool) -> None:
+    intel_file = job_dir / "job_intelligence.md"
+    if not intel_file.exists():
+        return
+    content = intel_file.read_text(encoding="utf-8")
+    existing = re.findall(rf"### {re.escape(artifact)} — v(\d+)", content)
+    version = len(existing) + 1
+    today = today_iso()
+    if approved:
+        entry = f"\n### {artifact} — v{version} → approved {today}\n"
+    else:
+        tag_str = ", ".join(tags) if tags else "none"
+        entry = (
+            f"\n### {artifact} — v{version} → revision requested {today}\n"
+            f"Issues: {tag_str}\n"
+            f"Notes: {notes}\n"
+        )
+    if "## Content iterations" in content:
+        content += entry
+    else:
+        content += f"\n\n## Content iterations\n{entry}"
+    intel_file.write_text(content, encoding="utf-8")
+
+
+def build_revision_prompt(job: dict, artifact: str, tags: list, notes: str, job_dir: Path) -> str:
+    rel = job_dir.relative_to(PROJECT_BASE)
+    file_map = {
+        "elevator_pitch": "elevator_pitch.md",
+        "cover_letter": "cover_letter.tex",
+        "resume": "resume_content.md",
+    }
+    artifact_file = file_map.get(artifact, f"{artifact}.md")
+    tag_str = ", ".join(tags) if tags else "none"
+    return (
+        f"Revise the {artifact.replace('_', ' ')} for {job.get('company')} — {job.get('title')}.\n\n"
+        f"Issues flagged: {tag_str}\n"
+        f"Specific notes: {notes}\n\n"
+        f"Current version: {rel}/{artifact_file}\n"
+        f"Reference: {rel}/job_intelligence.md\n"
+        f"Prompts: prompts/{artifact}.md"
+    )
+
+
+def _render_artifact_feedback(artifact: str, job: dict, job_dir: Path, jk: str) -> None:
+    revise_key = f"revising_{jk}_{artifact}"
+    prompt_key = f"revision_prompt_{jk}_{artifact}"
+    col_a, col_b = st.columns(2)
+    with col_a:
+        if st.button("👍 Approved", key=f"approve_{jk}_{artifact}"):
+            save_artifact_feedback(job_dir, artifact, [], "", approved=True)
+            st.success("Logged as approved.")
+    with col_b:
+        if st.button("✏️ Request revision", key=f"revise_btn_{jk}_{artifact}"):
+            st.session_state[revise_key] = True
+    if st.session_state.get(revise_key):
+        with st.form(key=f"revision_form_{jk}_{artifact}"):
+            tags = st.multiselect("Issue tags", CONTENT_ISSUE_TAGS)
+            notes = st.text_area("What specifically needs to change?")
+            if st.form_submit_button("Save feedback + copy revision prompt"):
+                save_artifact_feedback(job_dir, artifact, tags, notes, approved=False)
+                prompt = build_revision_prompt(job, artifact, tags, notes, job_dir)
+                st.session_state[prompt_key] = prompt
+                st.session_state[revise_key] = False
+                st.success("Feedback saved.")
+    if prompt_key in st.session_state:
+        st.code(st.session_state[prompt_key], language=None)
+
+
+def _render_generation_status(jk: str, job: dict) -> None:
+    proc = st.session_state.get(f"gen_proc_{jk}")
+    start = st.session_state.get(f"gen_start_{jk}", time.time())
+    last_poll = st.session_state.get(f"last_poll_{jk}", start)
+    now = time.time()
+    elapsed_s = int(now - start)
+    elapsed_str = f"{elapsed_s // 60}m {elapsed_s % 60}s" if elapsed_s >= 60 else f"{elapsed_s}s"
+    next_poll_s = max(0, CONTENT_POLL_INTERVAL - int(now - last_poll))
+    st.info(f"⏱ {elapsed_str} elapsed  |  Next check in {next_poll_s}s")
+    if now - last_poll >= CONTENT_POLL_INTERVAL:
+        if proc is not None and proc.poll() is not None:
+            del st.session_state[f"gen_proc_{jk}"]
+            del st.session_state[f"gen_start_{jk}"]
+            del st.session_state[f"last_poll_{jk}"]
+            st.rerun()
+            return
+        st.session_state[f"last_poll_{jk}"] = now
+    status = get_content_status(job)
+    step_cols = st.columns(4)
+    for col, name, label in zip(
+        step_cols,
+        ["job_intelligence", "elevator_pitch", "cover_letter", "resume"],
+        ["Intelligence", "Pitch", "Cover Letter", "Resume"],
+    ):
+        col.metric(label, "✅" if status[name] else "⏳")
+
+
+def render_content_panel(job: dict) -> None:
+    jk = job_key(job)
+    job_dir = get_job_dir(job)
+    is_generating = f"gen_proc_{jk}" in st.session_state
+    with st.expander("📄 Content"):
+        if is_generating:
+            _render_generation_status(jk, job)
+            return
+        status = get_content_status(job)
+        has_any = any(status.values())
+        claude_bin = shutil.which("claude")
+        if not has_any:
+            if not claude_bin:
+                st.warning("`claude` CLI not found in PATH — cannot auto-generate.")
+            else:
+                if st.button("⚡ Generate content", key=f"gen_{jk}"):
+                    start_content_generation(job)
+                    st.rerun()
+            return
+        if not all(status.values()) and claude_bin:
+            if st.button("🔄 Regenerate missing", key=f"regen_{jk}"):
+                start_content_generation(job)
+                st.rerun()
+        if status["elevator_pitch"] and job_dir:
+            st.markdown("**📝 Elevator Pitch**")
+            text = (job_dir / "elevator_pitch.md").read_text(encoding="utf-8")
+            st.code(text, language=None)
+            _render_artifact_feedback("elevator_pitch", job, job_dir, jk)
+            st.divider()
+        if status["cover_letter"] and job_dir:
+            st.markdown("**📎 Cover Letter**")
+            pdf_bytes = (job_dir / "cover_letter.pdf").read_bytes()
+            st.download_button(
+                "⬇ Download Cover Letter PDF",
+                pdf_bytes,
+                file_name="cover_letter.pdf",
+                mime="application/pdf",
+                key=f"dl_cl_{jk}",
+            )
+            _render_artifact_feedback("cover_letter", job, job_dir, jk)
+            st.divider()
+        if status["resume"] and job_dir:
+            pdf_path = _get_resume_pdf_path(job_dir)
+            if pdf_path:
+                st.markdown("**📎 Resume**")
+                pdf_bytes = pdf_path.read_bytes()
+                st.download_button(
+                    "⬇ Download Resume PDF",
+                    pdf_bytes,
+                    file_name=pdf_path.name,
+                    mime="application/pdf",
+                    key=f"dl_res_{jk}",
+                )
+                _render_artifact_feedback("resume", job, job_dir, jk)
 
 
 # ─── Score display ────────────────────────────────────────────────────────────
@@ -294,7 +545,7 @@ def discover_page():
 
         date_range = st.date_input(
             "Date range",
-            value=(today - timedelta(days=30), today),
+            value=(today - timedelta(days=1), today),
             max_value=today,
         )
 
@@ -350,15 +601,25 @@ def discover_page():
             elif has_feedback:
                 st.caption(f"⭐ {job['feedback'].get('rating', '').replace('_', ' ')}")
 
-        # Source links
+        # Source links + pipeline button
         sources = job.get("sources", [])
-        if sources:
-            links = "  ·  ".join(
-                f"[{s.get('platform', 'link').capitalize()}]({s.get('url', '')})"
-                for s in sources
-                if s.get("url")
-            )
-            st.markdown(links)
+        link_col, btn_col = st.columns([4, 1])
+        with link_col:
+            if sources:
+                links = "  ·  ".join(
+                    f"[{s.get('platform', 'link').capitalize()}]({s.get('url', '')})"
+                    for s in sources
+                    if s.get("url")
+                )
+                st.markdown(links)
+        with btn_col:
+            if not in_pipeline:
+                if st.button("📋 Save to Pipeline", key=f"save_{i}"):
+                    data = load_jobs()
+                    save_to_pipeline(data, jk)
+                    start_content_generation(job)
+                    st.success("Saved! Generating content...")
+                    st.rerun()
 
         # Expandable details + actions
         with st.expander(f"Details & Actions — {job.get('company', '—')} · {job.get('title', '—')}"):
@@ -381,16 +642,6 @@ def discover_page():
                 st.warning(f"Deal-breaker override: score capped at {breakdown['deal_breaker_override']}")
 
             st.divider()
-
-            # Save to pipeline
-            if not in_pipeline:
-                if st.button("📋 Save to Pipeline", key=f"save_{i}"):
-                    data = load_jobs()
-                    save_to_pipeline(data, jk)
-                    st.success("Saved to pipeline!")
-                    st.rerun()
-            else:
-                st.success(f"In pipeline: **{job['pipeline'].get('status', '').replace('_', ' ')}**")
 
             st.markdown("**Rate this job**")
             with st.form(key=f"rate_form_{i}"):
@@ -447,13 +698,29 @@ def pipeline_page():
                     st.error(f"Fetched job is missing title or company. Got: {fetched}")
                 else:
                     # Dedup check
-                    existing_keys = {
-                        normalize_company(j["company"]) + "__" + normalize_title(j["title"])
-                        for j in jobs_data["active_jobs"]
-                    }
-                    dedup_key = normalize_company(fetched["company"]) + "__" + normalize_title(fetched["title"])
-                    if dedup_key in existing_keys:
-                        st.warning(f"**{fetched['company']} — {fetched['title']}** is already in your job list.")
+                    existing_job = next(
+                        (j for j in jobs_data["active_jobs"]
+                         if normalize_company(j["company"]) + "__" + normalize_title(j["title"])
+                         == normalize_company(fetched["company"]) + "__" + normalize_title(fetched["title"])),
+                        None,
+                    )
+                    if existing_job is not None:
+                        if "pipeline" in existing_job:
+                            status = existing_job["pipeline"].get("status", "unknown").replace("_", " ").title()
+                            st.info(f"**{existing_job['company']} — {existing_job['title']}** is already in the pipeline ({status}).")
+                        else:
+                            today = today_iso()
+                            existing_job["pipeline"] = {
+                                "status": "want_to_apply",
+                                "date_added": today,
+                                "date_updated": today,
+                                "notes": "",
+                                "history": [{"status": "want_to_apply", "date": today}],
+                            }
+                            save_jobs(jobs_data)
+                            start_content_generation(existing_job)
+                            st.success(f"Added **{existing_job['company']} — {existing_job['title']}** to pipeline. Generating content...")
+                            st.rerun()
                     else:
                         # Score
                         try:
@@ -493,8 +760,105 @@ def pipeline_page():
                         }
                         jobs_data["active_jobs"].append(new_job)
                         save_jobs(jobs_data)
-                        st.success(f"Added **{fetched['company']} — {fetched['title']}** to pipeline (score: {fetched.get('score', 0)})")
+                        start_content_generation(new_job)
+                        st.success(f"Added **{fetched['company']} — {fetched['title']}** to pipeline (score: {fetched.get('score', 0)}). Generating content...")
                         st.rerun()
+
+    # ── Add manually (no URL) ──
+    # Show success/info banner outside expander so it survives the rerun
+    if "manual_add_banner" in st.session_state:
+        level, msg = st.session_state.pop("manual_add_banner")
+        getattr(st, level)(msg)
+
+    _form_v = st.session_state.get("manual_form_v", 0)
+    _expander_open = st.session_state.pop("manual_expander_open", False)
+    with st.expander("✏️ Add job manually (no URL)", expanded=_expander_open):
+        with st.form(f"manual_add_form_{_form_v}"):
+            man_company = st.text_input("Company *")
+            man_title = st.text_input("Title *")
+            man_location = st.text_input("Location")
+            man_url = st.text_input("Job URL (optional)")
+            man_desc = st.text_area("Job description / paste text (optional)", height=200)
+            submitted = st.form_submit_button("Add to Pipeline")
+
+        if submitted:
+            if not man_company.strip() or not man_title.strip():
+                st.warning("Company and Title are required.")
+            else:
+                existing_job = next(
+                    (j for j in jobs_data["active_jobs"]
+                     if normalize_company(j["company"]) + "__" + normalize_title(j["title"])
+                     == normalize_company(man_company.strip()) + "__" + normalize_title(man_title.strip())),
+                    None,
+                )
+                if existing_job is not None:
+                    if "pipeline" in existing_job:
+                        status = existing_job["pipeline"].get("status", "unknown").replace("_", " ").title()
+                        st.session_state["manual_add_banner"] = ("info", f"**{existing_job['company']} — {existing_job['title']}** is already in the pipeline ({status}).")
+                        st.session_state["manual_form_v"] = _form_v + 1
+                        st.rerun()
+                    else:
+                        today = today_iso()
+                        existing_job["pipeline"] = {
+                            "status": "want_to_apply",
+                            "date_added": today,
+                            "date_updated": today,
+                            "notes": "",
+                            "history": [{"status": "want_to_apply", "date": today}],
+                        }
+                        save_jobs(jobs_data)
+                        start_content_generation(existing_job)
+                        st.session_state["manual_add_banner"] = ("success", f"Added **{existing_job['company']} — {existing_job['title']}** to pipeline. Generating content...")
+                        st.session_state["manual_form_v"] = _form_v + 1
+                        st.rerun()
+                else:
+                    job_obj = {
+                        "title": man_title.strip(),
+                        "company": man_company.strip(),
+                        "location": man_location.strip(),
+                        "description": man_desc.strip(),
+                        "job_url": man_url.strip(),
+                    }
+                    try:
+                        with open(CONFIG_PATH) as f:
+                            config = json.load(f)
+                        score_job(job_obj, config)
+                    except Exception:
+                        job_obj.setdefault("score", 0)
+                        job_obj.setdefault("score_breakdown", {})
+                        job_obj.setdefault("score_label", "Unknown")
+                    today = today_iso()
+                    new_job = {
+                        "id": next_job_id(jobs_data),
+                        "title": job_obj["title"],
+                        "company": job_obj["company"],
+                        "location": job_obj["location"],
+                        "description": job_obj["description"],
+                        "job_url": job_obj["job_url"],
+                        "date_posted": "None",
+                        "site": "manual",
+                        "salary_source": "None",
+                        "sources": [{"platform": "manual", "url": job_obj["job_url"]}],
+                        "score": job_obj.get("score", 0),
+                        "score_breakdown": job_obj.get("score_breakdown", {}),
+                        "score_label": job_obj.get("score_label", "Unknown"),
+                        "date_found": today,
+                        "action": "none",
+                        "detail_file": "",
+                        "pipeline": {
+                            "status": "want_to_apply",
+                            "date_added": today,
+                            "date_updated": today,
+                            "notes": "",
+                            "history": [{"status": "want_to_apply", "date": today}],
+                        },
+                    }
+                    jobs_data["active_jobs"].append(new_job)
+                    save_jobs(jobs_data)
+                    start_content_generation(new_job)
+                    st.session_state["manual_add_banner"] = ("success", f"Added **{job_obj['company']} — {job_obj['title']}** to pipeline (score: {job_obj.get('score', 0)}). Generating content...")
+                    st.session_state["manual_form_v"] = _form_v + 1
+                    st.rerun()
 
     pipeline_jobs = [j for j in jobs if "pipeline" in j]
 
@@ -602,7 +966,14 @@ def pipeline_page():
                             save_jobs(data)
                         st.success("Notes saved!")
 
+            render_content_panel(job)
+
             st.divider()
+
+    # Auto-rerun every second while any job is generating (keeps countdown timer live)
+    if any(f"gen_proc_{job_key(j)}" in st.session_state for j in pipeline_jobs):
+        time.sleep(1)
+        st.rerun()
 
 
 # ─── Page 3: Scoring Insights ─────────────────────────────────────────────────

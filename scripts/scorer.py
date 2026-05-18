@@ -114,22 +114,54 @@ def normalize(text: str) -> str:
 
 
 def extract_min_yoe(description: str) -> Optional[int]:
-    """Extract minimum years of experience from a job description."""
+    """Extract the YOE value that yields the best fit score.
+
+    Range patterns (e.g. "2-6 years") capture both endpoints; floor/ceiling
+    patterns capture one. We return whichever candidate scores highest so that
+    "2-6 years" doesn't unfairly penalise a 7-year candidate.
+    """
     if not description:
         return None
     desc_lower = description.lower()
-    patterns = [
-        r"(\d+)\s*\+?\s*years?\s+of\s+experience",
+
+    # Patterns that yield a single value (floor / ceiling)
+    single_patterns = [
+        r"(\d+)\s*\+\s*years?\s+of\s+experience",
         r"(\d+)\s*\+\s*years?",
         r"minimum\s+(\d+)\s+years?",
         r"at\s+least\s+(\d+)\s+years?",
-        r"(\d+)\s*[-–to]+\s*\d+\s+years?",
+        r"(\d+)\s*years?\s+of\s+experience",
     ]
-    values = []
-    for pattern in patterns:
+    # Patterns that yield a range — capture both endpoints
+    range_patterns = [
+        r"(\d+)\s*[-–to]+\s*(\d+)\s+years?",
+    ]
+
+    candidates: list[int] = []
+    for pattern in single_patterns:
         for match in re.finditer(pattern, desc_lower):
-            values.append(int(match.group(1)))
-    return min(values) if values else None
+            candidates.append(int(match.group(1)))
+    for pattern in range_patterns:
+        for match in re.finditer(pattern, desc_lower):
+            candidates.append(int(match.group(1)))
+            candidates.append(int(match.group(2)))
+
+    if not candidates:
+        return None
+
+    # Return the candidate that gives the best (highest) yoe_fit score
+    def _yoe_score(yoe: int) -> int:
+        if yoe <= 3:
+            return -15
+        if yoe == 4:
+            return -8
+        if yoe <= 8:
+            return 0
+        if yoe <= 11:
+            return -5
+        return -10
+
+    return max(candidates, key=_yoe_score)
 
 
 def extract_salary_lpa(description: str) -> Optional[float]:

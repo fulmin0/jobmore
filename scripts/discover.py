@@ -325,10 +325,17 @@ def main():
         key = f"{normalize_company(j.get('company',''))}__{normalize_title(j.get('title',''))}"
         existing_keys.add(key)
 
+    existing_ids = {j.get("id") for j in jobs_data.get("active_jobs", [])}
     new_jobs = []
     for j in scored_jobs:
         key = f"{normalize_company(j.get('company',''))}__{normalize_title(j.get('title',''))}"
         if key not in existing_keys:
+            nid = jobs_data.get("next_id", 1)
+            while nid in existing_ids:
+                nid += 1
+            jobs_data["next_id"] = nid + 1
+            existing_ids.add(nid)
+            j["id"] = nid
             new_jobs.append(j)
             existing_keys.add(key)
 

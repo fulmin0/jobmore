@@ -11,9 +11,9 @@ Usage:
 One-time setup:
   1. Copy your Overleaf .tex file to templates/resume_base.tex
   2. Add injection markers around each role's \\item lines:
-       % INJECT_START: senior_pm_businessonbot
+       % INJECT_START: r1_bullets
        \\item Old bullet...
-       % INJECT_END: senior_pm_businessonbot
+       % INJECT_END: r1_bullets
      Run --list-keys to see the keys and baseline bullet counts.
   3. brew install tectonic && pip install pypdf
 
@@ -24,7 +24,7 @@ Raw LaTeX passthrough:
   links, \\textbf{...} emphasis, etc. Plain-text bullets (the common case)
   still get safe escaping for &, %, _, #, etc.
 
-Text-block keys (summary, skills, bob_subheading, apollo_subheading):
+Text-block keys (summary, skills, r1_subheading, r2_subheading, r2b_subheading, r2c_header, etc.):
   These keys inject a single line of text rather than a bullet list.
   Plain-text values are LaTeX-escaped. Values containing a backslash are
   treated as raw LaTeX and injected verbatim (same passthrough rule).
@@ -92,11 +92,19 @@ def substitute_personal(tex: str) -> str:
     return tex
 JOBS_DIR = PROJECT_ROOT / "output" / "jobs"
 READY_DIR = PROJECT_ROOT / "output" / "ready"
-TEMPLATE_PATH = PROJECT_ROOT / "templates" / "resume_base.tex"
+_personal_template = PROJECT_ROOT / "templates" / "resume_base.personal.tex"
+TEMPLATE_PATH = _personal_template if _personal_template.exists() else PROJECT_ROOT / "templates" / "resume_base.tex"
 
 # Keys that inject a single line of text rather than a bullet list.
 # Extend this set when new text-block inject regions are added to the template.
-TEXT_BLOCK_KEYS = {'summary', 'skills', 'bob_subheading', 'apollo_subheading', 'mouve_title'}
+TEXT_BLOCK_KEYS = {
+    'summary', 'skills',
+    'r1_header', 'r1_subheading',
+    'r2_header', 'r2_subheading', 'r2b_subheading', 'r2c_header',
+    'r3_title', 'earlier_experience', 'education',
+    # personal template subheading keys
+    'bob_subheading', 'apollo_subheading', 'doctor_app_subheading',
+}
 
 # ---------------------------------------------------------------------------
 # Line budget constants
@@ -113,10 +121,7 @@ CALIBRATED_MAX_LINES: int = 17        # 90% of empirical max (19); calibrated 20
 # ---------------------------------------------------------------------------
 
 def normalize_key(text: str) -> str:
-    """
-    Turn a role header into a marker key.
-    "Senior PM, BusinessOnBot (2024-25)" → "senior_pm_businessonbot"
-    """
+    """Normalise a **...** section header from resume_content.md into a marker key."""
     text = re.sub(r'\(\d{4}[-–]\d{2,4}\)', '', text)   # strip year ranges
     text = re.sub(r'\(\d{4}\)', '', text)                # strip single years
     text = text.lower()
@@ -170,6 +175,23 @@ def parse_resume_ready(md_path: Path) -> dict:
         if not stripped or (stripped.startswith('*') and not stripped.startswith('**') and stripped.endswith('*')):
             continue
 
+        # ### key format (alternative to **bold** headers)
+        h3_m = re.match(r'^###\s+(\S+)$', stripped)
+        if h3_m:
+            key = h3_m.group(1)
+            if key == 'summary':
+                current_key = 'summary'
+            elif key == 'skills':
+                current_key = 'skills'
+            elif key in TEXT_BLOCK_KEYS:
+                current_key = key
+            else:
+                result['roles'].setdefault(key, {'header': key, 'bullets': []})
+                if key not in result['role_order']:
+                    result['role_order'].append(key)
+                current_key = key
+            continue
+
         # Summary header
         if stripped == '**Summary**':
             current_key = 'summary'
@@ -181,15 +203,21 @@ def parse_resume_ready(md_path: Path) -> dict:
             continue
 
         # Role header: **Role, Company (Years)**  <!-- optional HTML comment ignored -->
+        comment_m = re.search(r'<!--\s*key:\s*(\w+)\s*-->', stripped)
+        comment_key = comment_m.group(1) if comment_m else None
+        
         stripped_no_comment = re.sub(r'\s*<!--.*?-->', '', stripped).strip()
         role_m = re.match(r'^\*\*(.+?)\*\*$', stripped_no_comment)
         if role_m:
             header = role_m.group(1)
             if header not in ('Summary', 'Skills'):
-                key = normalize_key(header)
-                result['roles'][key] = {'header': header, 'bullets': []}
-                result['role_order'].append(key)
-                current_key = key
+                key = comment_key or normalize_key(header)
+                if key in TEXT_BLOCK_KEYS:
+                     current_key = key
+                else:
+                    result['roles'][key] = {'header': header, 'bullets': []}
+                    result['role_order'].append(key)
+                    current_key = key
                 continue
 
         # Bullet line
@@ -204,12 +232,19 @@ def parse_resume_ready(md_path: Path) -> dict:
             continue
 
         # Single-line content for text-block keys
-        if current_key == 'summary' and stripped and not stripped.startswith('**'):
-            result['summary'] = stripped
-        elif current_key == 'skills' and stripped and not stripped.startswith('**'):
-            result['skills'] = stripped
+        # Strip outer {…} used as visual delimiters in markdown
+        def _strip_braces(s: str) -> str:
+            s = s.strip()
+            if s.startswith('{') and s.endswith('}') and '\\' not in s:
+                s = s[1:-1].strip()
+            return s
+
+        if current_key == 'summary' and stripped and not stripped.startswith('**') and not stripped.startswith('###'):
+            result['summary'] = _strip_braces(stripped) if '\\\\' not in stripped else stripped
+        elif current_key == 'skills' and stripped and not stripped.startswith('**') and not stripped.startswith('###'):
+            result['skills'] = _strip_braces(stripped)
         elif (current_key in TEXT_BLOCK_KEYS and current_key not in ('summary', 'skills')
-              and stripped and not stripped.startswith('**') and not stripped.startswith('-')):
+              and stripped and not stripped.startswith('**') and not stripped.startswith('-') and not stripped.startswith('###')):
             result['text_blocks'][current_key] = stripped
 
     return result
@@ -281,6 +316,9 @@ def format_bullet(text: str) -> str:
                 text = text.replace(char, repl)
         text = _fix_unicode_chars(text)
 
+    # Convert **bold** to \textbf{bold}
+    text = re.sub(r'\*\*(.*?)\*\*', r'\\textbf{\1}', text)
+
     return f'  \\item {text}'
 
 
@@ -338,12 +376,15 @@ def inject_into_template(template_text: str, parsed: dict) -> str:
     Replace content between % INJECT_START: key / % INJECT_END: key markers.
     Unmatched markers are left unchanged.
     """
-    pattern = r'(% INJECT_START: ([^\n]+))\n(.*?)\n(% INJECT_END: \2)'
+    pattern = r'(% INJECT_START: ([^\n]+))\n(.*?)(% INJECT_END: \2)'
 
     def _passthrough_or_escape(text: str) -> str:
         """Unicode substitution, then raw LaTeX if backslash present, else escaped plain text."""
         text = _fix_unicode_chars(text)
-        return text if '\\' in text else latex_escape(text)
+        text = text if '\\' in text else latex_escape(text)
+        # Convert **bold** to \textbf{bold}
+        text = re.sub(r'\*\*(.*?)\*\*', r'\\textbf{\1}', text)
+        return text
 
     def replace_block(m):
         start_comment = m.group(1)
@@ -648,7 +689,7 @@ def calibrate_resume(job_dir: Path, md_path: Path) -> None:
     cal_dir.mkdir(exist_ok=True)
 
     # Minimal baseline: 1 short bullet per role.
-    # Exclude text-block keys (bob_subheading, apollo_subheading) — they appear in
+    # Exclude text-block keys (r1_subheading, r2_subheading, etc.) — they appear in
     # role_order because they match the **...** header pattern, but their content is
     # handled by the text_blocks injection path, not the bullet injection path.
     parsed = copy.deepcopy(parse_resume_ready(md_path))
@@ -737,6 +778,8 @@ def main():
                         help='Print marker keys for this file and exit (no build)')
     parser.add_argument('--calibrate', action='store_true',
                         help='Empirically calibrate line-budget constants and print them (no resume built)')
+    parser.add_argument('--skip-inject', action='store_true',
+                        help='Skip template injection and recompile the existing resume.tex as-is')
     args = parser.parse_args()
 
     if not args.job and not args.file:
@@ -779,32 +822,40 @@ def main():
             print(f'\n(No baseline found — {TEMPLATE_PATH.relative_to(PROJECT_ROOT)} missing or has no INJECT markers)')
         return
 
-    # Verify template exists
-    if not TEMPLATE_PATH.exists():
-        print(f'Error: template not found at {TEMPLATE_PATH}')
-        print('Copy your Overleaf .tex file to templates/resume_base.tex')
-        print('Then add % INJECT_START / % INJECT_END markers around each role\'s \\item lines.')
-        sys.exit(1)
-
-    # Warn if template is stale (> 30 days)
-    age_days = (time.time() - os.path.getmtime(str(TEMPLATE_PATH))) / 86400
-    if age_days > 30:
-        print(f'Warning: templates/resume_base.tex last updated {int(age_days)} days ago.')
-        print("If you've revised your resume layout on Overleaf, re-copy the .tex file.\n")
-
-    # Inject into template
-    template_text = TEMPLATE_PATH.read_text(encoding='utf-8')
-    template_text = substitute_personal(template_text)
-    injected = inject_into_template(template_text, parsed)
-    # Resolve relative font path to absolute so tectonic can find fonts
-    # regardless of where the injected .tex is compiled from
-    fonts_abs = str(TEMPLATE_PATH.parent / 'fonts') + '/'
-    injected = injected.replace('Path = fonts/', f'Path = {fonts_abs}')
-
-    job_dir.mkdir(parents=True, exist_ok=True)
     tex_path = job_dir / 'resume.tex'
-    tex_path.write_text(injected, encoding='utf-8')
-    print(f'Wrote: {tex_path.relative_to(PROJECT_ROOT)}')
+
+    if args.skip_inject:
+        # Recompile the existing resume.tex without regenerating from template
+        if not tex_path.exists():
+            print(f'Error: --skip-inject requires an existing {tex_path.relative_to(PROJECT_ROOT)}')
+            sys.exit(1)
+        print(f'--skip-inject: using existing {tex_path.relative_to(PROJECT_ROOT)}')
+    else:
+        # Verify template exists
+        if not TEMPLATE_PATH.exists():
+            print(f'Error: template not found at {TEMPLATE_PATH}')
+            print('Copy your Overleaf .tex file to templates/resume_base.tex')
+            print('Then add % INJECT_START / % INJECT_END markers around each role\'s \\item lines.')
+            sys.exit(1)
+
+        # Warn if template is stale (> 30 days)
+        age_days = (time.time() - os.path.getmtime(str(TEMPLATE_PATH))) / 86400
+        if age_days > 30:
+            print(f'Warning: templates/resume_base.tex last updated {int(age_days)} days ago.')
+            print("If you've revised your resume layout on Overleaf, re-copy the .tex file.\n")
+
+        # Inject into template
+        template_text = TEMPLATE_PATH.read_text(encoding='utf-8')
+        template_text = substitute_personal(template_text)
+        injected = inject_into_template(template_text, parsed)
+        # Resolve relative font path to absolute so tectonic can find fonts
+        # regardless of where the injected .tex is compiled from
+        fonts_abs = str(TEMPLATE_PATH.parent / 'fonts') + '/'
+        injected = injected.replace('Path = fonts/', f'Path = {fonts_abs}')
+
+        job_dir.mkdir(parents=True, exist_ok=True)
+        tex_path.write_text(injected, encoding='utf-8')
+        print(f'Wrote: {tex_path.relative_to(PROJECT_ROOT)}')
 
     # Pre-flight line budget check
     total_lines, budget_warnings = check_line_budget(parsed)

@@ -3,6 +3,8 @@
 ## What this is
 Job search pipeline: discovery (scraping + scoring), pipeline tracking (Streamlit), and resume content generation (conversational).
 
+You're the cofounder and CTO. You're expected to follow the best practices to build and contribute to ideation. The chat window is not user input. It's your conversation with the other co-founder, the CEO. Push back wherever your technical expertise and ideation tells you differently. Always reply as a simple conversation, unless you take explicit permission to share your plan/ files for the other cofounder to view. 
+
 ## File conventions
 
 | Path | Purpose |
@@ -16,7 +18,9 @@ Job search pipeline: discovery (scraping + scoring), pipeline tracking (Streamli
 | `output/jobs/{id:04d}_{Company}_{Title}/notes.md` | HM signals, key stories, gaps, interview prep — source of truth; `pipeline.notes` in JSON is a 120-char truncated summary |
 | `output/jobs/{id:04d}_{Company}_{Title}/cover_letter.tex` | LaTeX cover letter; compiled to `cover_letter.pdf` via Tectonic using `templates/cover_letter_base.tex` |
 | `output/jobs/{id:04d}_{Company}_{Title}/elevator_pitch.md` | LinkedIn DM / InMail pitch to HM — ~4 short paragraphs, plain prose |
-| `output/jobs/applied/{id:04d}_{Company}_{Title}/` | Same structure; folder auto-moved here when status transitions to `applied` |
+| `output/jobs/applied/{id:04d}_{Company}_{Title}/` | Same structure; folder auto-moved here when status → `applied`, `recruiter_screen`, `interview`, `offer` |
+| `output/jobs/referral/{id:04d}_{Company}_{Title}/` | Same structure; folder auto-moved here when status → `referral_found`, `referral_submitted` |
+| `output/jobs/archive/{id:04d}_{Company}_{Title}/` | Same structure; folder auto-moved here when status → `rejected`, `withdrawn` |
 | `output/ready/{pdf_name}.pdf` | Latest built resume — always the "send this" copy |
 | `templates/resume_base.tex` | Master LaTeX template (copy from Overleaf, add INJECT markers) |
 | `templates/cover_letter_base.tex` | Master LaTeX cover letter template — copy to job directory, fill in body |
@@ -44,10 +48,10 @@ Job search pipeline: discovery (scraping + scoring), pipeline tracking (Streamli
   - **System design prep**: For jobs requiring system design skills, create `output/jobs/{Company}_{Title}/system_design_prep.md` with 2 paragraphs per relevant experience point — the design challenge, patterns to know, and how it maps to the target company's problems. This is interview prep, not resume content.
   - **User phrasing**: Present multiple options for bullet wording — never unilaterally rewrite the user's text. The user decides exact wording. When proposing changes, describe the direction and why, then draft options.
 - **Resume build**: When the user asks to build the PDF, compile the resume, or run build_resume — run `source venv/bin/activate && python3 scripts/build_resume.py --job "Company::Title"`. Requires `templates/resume_base.tex` with INJECT markers. First-time setup: `brew install tectonic && pip install pypdf`. The script parses the content file, injects into the template, compiles via Tectonic, and runs an interactive pruning loop if the PDF exceeds one page.
-  - **Text-block inject keys**: `summary`, `skills`, `bob_subheading`, `apollo_subheading`, `mouve_title` inject a single line of text rather than a bullet list. Subheading values in the content file must be raw LaTeX (include `\textbf{}`, `\hfill{year}`, trailing `\\`) — the raw-passthrough rule handles them verbatim.
+  - **Text-block inject keys**: `summary`, `skills`, `r1_header`, `r1_subheading`, `r2_header`, `r2_subheading`, `r2b_subheading`, `r2c_header`, `r3_title`, `earlier_experience`, `education` inject a single line of text rather than a bullet list. Subheading/header values must be raw LaTeX (include `\textbf{}`, `\hfill{year}`, trailing `\\`). `r2c_header` must include `\hspace{15pt}` for the indented sub-role appearance — the raw-passthrough rule handles all of these verbatim. Role header values live in `templates/resume_base.personal.tex` (gitignored) — restore from backup on new machines.
   - **Unicode substitution**: the build script auto-replaces `₹` → `\rupee{}`, `→` → `$\rightarrow$`, `~N` → `${\sim}$N` before injection. Write these characters naturally in the content file; do not pre-escape them. **Only these 3 are handled** — other Unicode like `↔` (U+2194), `←`, emoji will fail silently or cause compilation errors. Use plain text alternatives (e.g., `store-to-digital` not `store↔digital`).
   - **Bold inline labels**: Use `\textbf{Label:}` at the start of a bullet to create bold prefix tags (e.g., `\textbf{Store→Digital:}`). The `\` triggers raw LaTeX mode; unicode substitution still applies inside. Useful for making phygital direction or category scannable.
-  - **Empty itemize environments**: If a role's INJECT block has no bullets (all commented out), the wrapping `\begin{itemize}...\end{itemize}` must be commented out in the template — an empty itemize causes `Missing \item` LaTeX errors. Currently applies to Mouve (itemize wrapper commented out, `mouve_title` INJECT marker available for per-job title customization).
+  - **Empty itemize environments**: If a role's INJECT block has no bullets (all commented out), the wrapping `\begin{itemize}...\end{itemize}` must be commented out in the template — an empty itemize causes `Missing \item` LaTeX errors. Currently applies to r3 (itemize wrapper commented out, `r3_title` INJECT marker available for per-job title customization).
   - **Line budget heuristic vs reality**: The pre-flight check (CALIBRATED_CHARS_PER_LINE=82, CALIBRATED_MAX_LINES=17) is a guide, not a hard gate. The actual PDF may fit on 1 page even when the heuristic flags overrun — especially when sections with overhead (vspace, itemize wrappers) are removed. Always build and check the PDF rather than pre-trimming to hit the heuristic exactly.
   - **Before marking PDF complete — run these checks**:
     1. Open the compiled `.tex` and confirm no literal Unicode `₹`, `→`, `←` remain (script handles them, but verify if you added raw LaTeX bullets manually).
@@ -57,11 +61,39 @@ Job search pipeline: discovery (scraping + scoring), pipeline tracking (Streamli
     5. Summary line and role subheadings match the bullet framing — if bullets say "post-purchase ops", summary and subheadings cannot say "AI products".
     6. Confirm 1 page (build script page-count check handles this, but verify visually).
 - **Job Intelligence Package**: Before creating any application content for a job (resume, elevator pitch, cover letter) — check if `output/jobs/{dir}/job_intelligence.md` exists. If not, run `prompts/job_intelligence.md` to generate it first. This file contains JD pillars, story bank rankings, domain correctness flags, and notation rules — all artifact prompts read it instead of re-deriving the analysis. Re-run only when the JD changes or new experience files are added.
+  - **Reads** `data/story_bank.md` at start (dedup registry for Step 6). Safe even if file doesn't exist yet.
+  - **Writes** `data/story_bank.md` at end: appends STAR+R entries for new stories scoring ≥ 2; updates `**Last used**` + unions pillar tags for existing entries.
+  - Gap mitigations (reframe language, cover letter callout templates, don't-apply recommendations) appear in `## Gap Analysis` within `job_intelligence.md`. Advisory only — artifact generation is never blocked.
+- **Default application flow** (run in this order unless user overrides):
+  1. Job Intelligence (`job_intelligence.md`) — always first
+  2. **Elevator pitch** — use `/elevator-pitch`. Always second, before resume content; draws from job intelligence only. Enforces: job_intelligence exists, fact sheet confirmed before writing V1.
+  3. **Resume content** — use `/resume-content`. Enforces: role-type confirmed, rewrite gate on every bullet, summary written last.
+  4. Resume build + PDF verify (1-page gate)
+  5. Cover letter — gated on resume *content* approval, not PDF build success; LaTeX/spacing issues must not block cover letter drafting
 - **Application collateral** (cover letter + elevator pitch): When the user asks to write a cover letter, elevator pitch, or application materials for a job — create the relevant files in the job's output directory.
-  - `cover_letter.tex` — read `prompts/cover_letter.md` for the full workflow. Do not create before the resume is reviewed and marked usable.
-  - `elevator_pitch.md` — read `prompts/elevator_pitch.md` for the full workflow.
-  - **Correction logging**: When any artifact is approved after corrections — before closing: (a) log each version + rejection reason to `## Content iterations` in `job_intelligence.md`, (b) identify the root-cause rule gap, (c) update the corresponding prompts file. Approval after zero corrections = log "v1 → approved". This is not optional.
-  - **Cross-job learning**: After every 3 jobs reach `applied` status, scan `## Content iterations` across all notes/intelligence files. Any correction reason that appears 2+ times is a systemic gap — update the prompts file.
+  - `cover_letter.tex` — read `prompts/cover_letter.md` for the full workflow. Do not create before the resume content is reviewed and approved by the user (PDF build can proceed in parallel).
+  - `elevator_pitch.md` — use `/elevator-pitch` (`.claude/commands/elevator-pitch.md`). Always create before the resume — it draws from `job_intelligence.md` and does not depend on resume content.
+  - **Iteration tracking**: At the start of each job's content flow (after job_intelligence), create `output/jobs/{dir}/iterations.md` with the first version block listing what was just created. Write `data/current_job.txt` with the active job directory path (e.g. `output/jobs/0032_Decathlon_Senior_PM`). After each artifact is produced, append a version block to `iterations.md` describing what was created/changed. When the user types `/revise`, read the slash command definition in `.claude/commands/revise.md`. When the user types `/approve`, read `.claude/commands/approve.md`. Both commands read `data/current_job.txt` to confirm the active job before writing anything. `iterations.md` and `data/iteration_log.md` are both maintained by Claude — user only writes plain-English feedback in `iterations.md` and uses slash commands as triggers.
+  - **iterations.md append rule**: Every `iterations.md` must end with `<!-- APPEND_NEXT_VERSION_HERE -->` as its final line. All new version blocks are inserted immediately before this marker — never above existing version blocks. This guarantees chronological order (V1 → V2 → V3 …) regardless of how the Edit tool anchors the insertion.
+  - **Resolved feedback rule**: Every version block from V2 onwards must include a `**Resolved feedback:**` field. For each feedback point written by the user in the prior `---` block, list what specifically changed. If a point was not addressed, state why explicitly (deferred / accepted risk / user decision). Do not create a version block for a revision without filling this field. This field is for the user to review — it is a legibility tool, not Claude self-certification.
+
+    Version block format (V2+):
+    ```
+    ## V{n}
+    **Created:** —
+    **Changed:** {file} — {specific change, not "updated bullets"}
+    **Deleted:** —
+    **Resolved feedback:**
+    - "{exact quote or paraphrase of feedback point}" → {what changed, or: deferred because X}
+    - "{next feedback point}" → {what changed}
+
+    ---
+    ```
+    V1 blocks do not have a Resolved feedback field (no prior feedback exists).
+  - **Application questions** (e.g. "Why this company?", "Describe your management experience"): Before drafting, read `job_intelligence.md` and check answers against JD signals — an answer that contradicts the JD (e.g. "0-to-1 is done" when the JD emphasizes 0-to-1 for new products) is an auto-fail. Rules:
+    - "Why this company?" — must name something specific from the JD, company mission, or product portfolio; connect it to a concrete experience (not generic enthusiasm); do not use "I am passionate about" or claim fit without evidence.
+    - "Management experience" — lead with **direct reports** (team size, what you owned: hiring / performance / delivery); compress influence-without-authority to one supporting sentence; back up the management approach with one concrete story (a decision made, a conflict resolved, a person grown), not just the outcome metric.
+    - Never let an application question answer contradict the JD — re-read the JD for the specific topic before drafting.
 - **Pipeline jobs**: When working with pipeline stages or job schema, refer to MEMORY.md for the schema definition.
 
 ## Running things

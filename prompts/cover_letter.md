@@ -13,7 +13,7 @@ Write as a PM who has done the work to understand this company's specific challe
 2. `output/jobs/{dir}/notes.md` — HM signals, key stories, gaps
 3. `templates/cover_letter_base.tex` — copy to job directory, fill in body
 
-Do not create before the resume is reviewed and marked usable.
+Do not create before the resume content (`resume_content.md`) is reviewed and approved by the user. PDF build can proceed in parallel — LaTeX/spacing issues do not block cover letter drafting.
 
 ---
 
@@ -33,23 +33,27 @@ From the intelligence file:
 ## Structure — 4 paragraphs
 
 **Paragraph 1 — Hook (3-4 sentences)**
-Why this company and this role specifically. Must contain something from the HM's post, the company's stated mission, or a specific product decision they made — not generic praise. End with one sentence establishing your domain fit.
+Why this company and this role specifically. Must contain something from the HM's post, the company's stated mission, or a specific product decision they made — not generic praise. End with one sentence establishing YOUR domain fit — what you built, not what you lack.
 
 - Good: reference a specific company challenge, recent launch, or HM signal
 - Bad: "I am excited to apply for the position of..."
 - Never say: "roadmap", "managed", "passionate about", "leverage synergies"
+- **Hook closing rule**: The hook's final sentence names a specific experience as your entry credential. It does NOT acknowledge a domain gap — that belongs in para 2's bridge sentence. "The Senior PM role is the work I want to own next, applied to X instead of Y" is a gap statement masquerading as a strength statement — cut it.
 
 **Paragraph 2 — Primary credential (4-5 sentences)**
 The story that directly addresses the differentiator pillar. Tell it as a problem → action → outcome narrative. Include one concrete metric. This should be the hardest-to-substitute experience — the thing that makes you the specific right person, not just a qualified PM.
 
 - Use the top-ranked domain-correct story from the story bank
 - Depth over breadth — one story told well beats three stories listed
+- **Domain gap rule**: When the top-ranked story is ⚠️ domain-adjacent (not exact domain match), add one bridge sentence explicitly connecting the domains: "The vertical is different; the underlying problem — [X] — is identical." Do not present an adjacent-domain story as if it IS the target domain.
+- **Bonus-explicit pillars**: If `job_intelligence.md` flags a `⭐ bonus-explicit` pillar, weave it into this paragraph or paragraph 3 — at minimum one clause. Never omit an explicitly-named JD bonus entirely.
 
 **Paragraph 3 — Supporting credential (3-4 sentences)**
 A second story addressing either another differentiator pillar or a table-stakes pillar that hasn't been covered. Can be shorter. Must have a metric or a named outcome.
 
 - Use the second-ranked story from the story bank
 - If the role has two differentiators, use both paras 2 and 3 for them; push table stakes to the opener or close
+- **One story only**: paragraph 3 covers exactly one story. Never stack two stories in the same paragraph — each gets its own paragraph or is cut. This is a hard rule, not a style preference.
 
 **Paragraph 4 — Close (2-3 sentences)**
 Simple, direct. State what you'd bring specifically. No performative enthusiasm. End with the ask.
@@ -80,4 +84,4 @@ Simple, direct. State what you'd bring specifically. No performative enthusiasm.
 3. Compile: `tectonic output/jobs/{dir}/cover_letter.tex`
 4. Present to the user for review before considering done
 
-**After approval**: log each version + rejection reason to `## Content iterations / Cover letter` in `job_intelligence.md`. If corrections were needed, identify the rule gap and update this prompts file before closing.
+**Close-out**: After producing the cover letter, append a version block to `output/jobs/{dir}/iterations.md` describing what changed. Remind the user: write feedback below the `---` line, then type `/revise` to proceed or `/approve` when satisfied.

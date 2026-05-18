@@ -22,6 +22,12 @@ Do **not** use:
 
 ---
 
+## Sequencing
+
+Always create the elevator pitch **before** the resume. It draws from `job_intelligence.md` and has no dependency on resume content or pipeline status. The pitch is the first touchpoint — it opens the door; the resume follows once content is locked.
+
+---
+
 ## Pre-writing — read the Job Intelligence Package
 
 Before writing anything, check if `output/jobs/{dir}/job_intelligence.md` exists.
@@ -33,7 +39,25 @@ From the intelligence file, apply:
 - **Bullet ordering**: Bullet 1 = primary qualification → Bullet 2 = differentiator → Bullet 3 = table stakes. Never order by JD reading position.
 - **Notation**: apply the Convert L/crore flag.
 
-**After approval — log to `## Content iterations` in `job_intelligence.md`**: record each version and the rejection reason. If corrections were needed, identify the rule gap and update this prompts file before closing.
+---
+
+## Fact verification gate — runs before writing V1
+
+After reading `job_intelligence.md`, state the following in the chat and wait for explicit user confirmation before writing any pitch content:
+
+```
+Proposed fact sheet:
+- Scale metric: [exact number + source — e.g. "24k+ daily active transactions (Apollo 247 pharmacy pipeline)"]
+- Story → Bullet 1 (primary qual): [story name + metric to be used]
+- Story → Bullet 2 (differentiator): [story name + metric to be used]
+- Story → Bullet 3 (table stakes): [story name + metric to be used]
+- Domain framing: [e.g. "Health insurance platform on Apollo 247 (NOT fintech underwriting)"]
+- Do Not Use: [any metric or framing that is approximate, contested, or flagged in job_intelligence.md]
+
+Confirm these before I write the pitch.
+```
+
+Wait for explicit confirmation or correction. If the user corrects an item, update the fact sheet, restate it, and wait again. **Do not write the pitch until the fact sheet is confirmed.**
 
 ---
 
@@ -108,3 +132,14 @@ Archit
 ## Output
 
 Write to `output/jobs/{dir}/elevator_pitch.md`. Use the file header format above. Present to the user for review before considering it done.
+
+**Close-out**: After producing the pitch, append a version block to `output/jobs/{dir}/iterations.md`:
+```
+## V{N}
+**Created:** elevator_pitch.md
+**Changed:** —
+**Deleted:** —
+
+---
+```
+Remind the user: write feedback below the `---` line, then type `/revise` to proceed or `/approve` when satisfied.

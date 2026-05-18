@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Write(/Users/fulmin/Develop/jobmore/output/jobs/**)",
+      "Write(/Users/fulmin/Develop/jobmore/output/ready/**)",
+      "Write(/Users/fulmin/Develop/jobmore/data/**)",
+      "Write(/Users/fulmin/Develop/jobmore/templates/**)",
+      "Read(/Users/fulmin/Develop/jobmore/output/jobs/**)",
+      "Read(/Users/fulmin/Develop/jobmore/data/**)",
+      "Bash(bash -c \"source /Users/fulmin/Develop/jobmore/venv/bin/activate && python3 /Users/fulmin/Develop/jobmore/scripts/build_resume.py*\")",
+      "Bash(tectonic /Users/fulmin/Develop/jobmore/output/jobs/**/*.tex*)",
+      "Bash(tectonic /Users/fulmin/Develop/jobmore/output/jobs/**/*.tex --outdir /Users/fulmin/Develop/jobmore/output/jobs/**/)"
+    ]
+  }
+}

@@ -101,6 +101,7 @@ Present the score table to the user before producing the final set.
 **4c. Produce the merged final set per role**
 
 Hard rules:
+- **Summary is written last.** Generate all role bullets first. Apply the rewrite gate (Step 4d). Only after all role bullets have passed the gate and the line budget is confirmed — write the summary. The summary is derived from the 2-3 strongest bullets that are actually in the final set. It must reflect what is in the resume, not what the JD says. If a bullet was pruned for line budget, the summary cannot reference it.
 - **Same bullet count per role as the baseline.** No expansion, no contraction. This is the line budget that keeps the resume on one page.
 - **Every role from the template appears in the output.** Never skip or remove a role.
 - `KEEP` bullets: copy verbatim from the baseline. If the baseline bullet contains raw LaTeX like `\href{...}{...}` or `\textbf{...}`, **copy the raw LaTeX too** — the build script has a raw-passthrough rule (bullets containing `\` are injected unescaped). You decide per bullet whether the link/formatting strengthens the candidate: keep `\href` to the company/product when it adds credibility, drop it when it's noise.
@@ -112,10 +113,41 @@ Metric tag meanings:
 - `[EXTRAPOLATED]`: directionally reasonable but fabricated — include derivation logic in talking points
 - `[MIXED]`: some real, some extrapolated — specify which
 
-**4d. Include talking points per bullet**
-Below each bullet, add 1-2 sentences on what to expand on if asked in an interview. Talking points do NOT go into the `Resume-Ready Bullets` section — they go in the working doc below it.
+**4d. Bullet rewrite gate — runs before presenting to user**
+
+Before the Resume-Ready section is shown to the user, every bullet must pass this gate. For each bullet, answer internally:
+
+1. **What did the person do?** — Name a concrete action (built, defined, led, shipped, reduced, negotiated). If the answer is "it's unclear" or "they were involved in", the bullet fails.
+2. **What changed because of it?** — Name a metric, scale signal, or directional outcome (by X%, for Y users, saving Z/month, from A to B). If the answer is "nothing is stated", the bullet fails.
+
+**A bullet that fails either check is rewritten before presenting. It is never shown to the user as a failing bullet with a flag — it is fixed first.** The gate is a rewrite loop, not a review checklist.
+
+Common failure patterns to catch:
+- "Defined X for Y" — action present, outcome missing → add outcome or replace bullet
+- "Anchored X as KPI" — what happened after anchoring? → add result
+- "Led X initiative across Y teams" — scope present, action and outcome both missing → rewrite from scratch
+- "Implemented X to increase Y" — valid structure only if Y has a number; "to increase Y" without a number fails
+
+**After the gate passes**, include talking points per bullet:
+Below each bullet in the working doc, add 1-2 sentences on what to expand on if asked in an interview. Talking points do NOT go into the `Resume-Ready Bullets` section — they go in the working doc below it.
 
 **Override**: If the user explicitly asks for more bullets in a role, honor it. The build script's pruning loop will catch page overflow.
+
+**4e. Pre-presentation full-resume scan — runs after 4d, before showing anything to the user**
+
+Read the entire Resume-Ready section as a single document — the way an HM would scan it cold. Fix every issue found before presenting. This is a rewrite loop, not a checklist to share with the user.
+
+Checks (all must pass):
+
+1. **Cross-bullet metric duplication**: Does any metric, number, or MRR figure appear in more than one bullet across the full resume? If yes, remove the duplicate — the metric should appear in exactly one bullet. The bullet that owns the metric most directly keeps it; the other is reframed to a different signal.
+
+2. **Summary signal repetition**: Read the summary sentence. List every signal it contains (e.g. "AI", "subscription", "fintech"). Now scan all bullets — does any signal appear 2+ times in the summary alone, or does the summary repeat word-for-word a phrase from a bullet? If yes, rewrite the summary. The summary must contain distinct signals, no repeated words or concepts.
+
+3. **Jargon origin check**: For every word or phrase that does not appear in the experience files or JD, ask: did the user say this, or did I introduce it? If I introduced it and it is not tagged [EXTRAPOLATED] or [MIXED], either (a) source it from the experience file, (b) tag it, or (c) drop it. Examples of introduced jargon that previously slipped through: "unlocking scale beyond bespoke builds", "regulated domain".
+
+4. **Section semantics**: Every bullet in a section must match the section header's stated scope. Template section headers are the canonical signal — if a bullet's story belongs to a different role period or product area than the section header describes, move it to the correct section or replace it.
+
+5. **Skills deviation**: The skills line must be the base resume skills with only explicit JD additions. Do not replace PM methodology skills (Go-to-Market, Product Life Cycle, Agile, User Research) with experience labels (e.g. "Fintech Products", "0-to-1 Launch"). Only add skills the JD names directly (e.g. if JD says "SQL proficiency required", add SQL). If unsure whether a skill was in the base, default to keeping the base skill.
 
 ### Step 5: Review & Iterate
 - Present the Resume-Ready section (final merged set) + talking points
@@ -129,7 +161,7 @@ Below each bullet, add 1-2 sentences on what to expand on if asked in an intervi
 - **System design prep**: For jobs requiring system design, offer to create a prep file at `output/jobs/{Company}_{Title}/system_design_prep.md` — 2 paragraphs per relevant experience point covering the design challenge, patterns to know, and the target company analog.
 - Iterate until user is satisfied
 - Final step: user runs `python3 scripts/build_resume.py --job "{Company}::{Title}"` to compile the PDF
-- **After approval**: log each version + rejection reason to `## Content iterations / Resume` in `job_intelligence.md`. If corrections were needed, identify the rule gap and update this prompts file before closing.
+- **Close-out**: After producing the resume content, append a version block to `output/jobs/{dir}/iterations.md` describing what changed. Remind the user: write feedback below the `---` line, then type `/revise` to proceed or `/approve` when satisfied.
 
 ---
 

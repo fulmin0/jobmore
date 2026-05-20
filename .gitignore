@@ -11,3 +11,18 @@ logs/*
 !logs/.gitkeep
 com.jobmore.discover.plist
 SETUP_COMPLETE.md
+
+# Build artifacts
+public/
+.hugo_build.lock
+node_modules/
+.next/
+
+# Archives & documents
+*.pdf
+*.zip
+
+# Scratch plans
+plans/
+plan*.md
+iteration_system_plan.md

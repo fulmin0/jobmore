@@ -4,9 +4,11 @@ __pycache__/
 *.pyc
 config.json
 templates/resume_base.personal.tex
-data/
+data/*
+!data/.gitkeep
 archive/
-output/
+output/*
+!output/.gitkeep
 logs/*
 !logs/.gitkeep
 com.jobmore.discover.plist

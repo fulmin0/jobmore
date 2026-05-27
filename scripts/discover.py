@@ -19,6 +19,7 @@ PROJECT_BASE = SCRIPT_DIR.parent                  # project root
 CONFIG_PATH = PROJECT_BASE / "config.json"
 DATA_DIR = PROJECT_BASE / "data"                  # jobs_found.json
 ARCHIVE_DIR = PROJECT_BASE / "archive" / "expired_jobs"
+TARGET_COMPANIES_PATH = DATA_DIR / "target_companies.json"
 
 sys.path.insert(0, str(SCRIPT_DIR))
 from scorer import score_all
@@ -43,14 +44,35 @@ def normalize_company(name: str) -> str:
     return re.sub(r"[^a-z0-9 ]", "", name).strip()
 
 
+def load_target_companies() -> frozenset:
+    """Load normalized company names from data/target_companies.json. Returns empty set if file missing."""
+    if not TARGET_COMPANIES_PATH.exists():
+        return frozenset()
+    with open(TARGET_COMPANIES_PATH) as f:
+        data = json.load(f)
+    return frozenset(normalize_company(c) for c in data.get("target_companies", []))
+
+
 def normalize_title(title: str) -> str:
     """Normalize job title for deduplication."""
     import re
     if not title:
         return ""
     title = title.lower()
-    for noise in ["senior", "lead", "staff", "principal", "i", "ii", "iii", "1", "2", "3"]:
-        title = re.sub(rf"\b{noise}\b", "", title)
+    # Normalize abbreviations to canonical forms so cross-site dupes merge,
+    # but keep seniority words so "Senior PM" and "PM" stay distinct.
+    abbrev_map = {
+        r"\bsr\.?\b": "senior",
+        r"\bjr\.?\b": "junior",
+        r"\bmgr\.?\b": "manager",
+        r"\bpgm\b": "program manager",
+        r"\bpm\b": "product manager",
+        r"\bvp\b": "vice president",
+        r"\bdir\.?\b": "director",
+        r"\bassoc\.?\b": "associate",
+    }
+    for pattern, replacement in abbrev_map.items():
+        title = re.sub(pattern, replacement, title)
     return re.sub(r"[^a-z0-9 ]", "", title).strip()
 
 
@@ -87,8 +109,8 @@ def run_jobspy(config: dict, test_mode: bool = False) -> tuple[list, dict]:
     """
     try:
         from jobspy import scrape_jobs
-    except ImportError:
-        print("ERROR: jobspy not installed. Run: pip install jobspy")
+    except ImportError as e:
+        print(f"ERROR: jobspy not installed. Run: pip install jobspy\nDetail: {e}")
         sys.exit(1)
 
     discovery = config["discovery"]
@@ -271,9 +293,12 @@ def save_jobs(jobs_data: dict) -> None:
 def main():
     parser = argparse.ArgumentParser(description="Jobmore daily job discovery")
     parser.add_argument("--test", action="store_true", help="Test mode: fewer results, verbose")
+    parser.add_argument("--hours-old", type=int, default=None, help="Override hours_old from config (e.g. --hours-old 120 for last 5 days)")
     args = parser.parse_args()
 
     config = load_config()
+    if args.hours_old is not None:
+        config["discovery"]["hours_old"] = args.hours_old
     md_path = config.get("output", {}).get("md_path", "").strip()
     OUTPUT_BASE = PROJECT_BASE / "output"
     job_details_dir = OUTPUT_BASE / "job_details"
@@ -342,6 +367,11 @@ def main():
     jobs_data["active_jobs"].extend(new_jobs)
     jobs_data["active_jobs"] = sorted(jobs_data["active_jobs"], key=lambda j: j.get("score", 0), reverse=True)
     jobs_data["last_updated"] = today_str
+
+    # Stamp is_target_company on all jobs (re-evaluated each run so backfill is automatic)
+    target_set = load_target_companies()
+    for job in jobs_data["active_jobs"]:
+        job["is_target_company"] = normalize_company(job.get("company", "")) in target_set
 
     print(f"New jobs added: {len(new_jobs)}")
 

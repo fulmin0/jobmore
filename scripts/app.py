@@ -263,6 +263,11 @@ def save_feedback(jobs_data: dict, jkey: str, rating: str, notes: str, flags: li
 
 CONTENT_POLL_INTERVAL = 30  # seconds between file/subprocess checks
 
+CLI_BACKENDS = {
+    "claude": ["--print", "--permission-mode", "bypassPermissions"],
+    "codex":  ["--approval-mode", "full-auto"],
+}
+
 CONTENT_ISSUE_TAGS = [
     "Too formal",
     "Missing key story",
@@ -326,11 +331,15 @@ def _build_generation_prompt(job: dict, job_dir: Path) -> str:
     )
 
 
-def start_content_generation(job: dict) -> None:
+def available_backends() -> list[str]:
+    return [name for name in CLI_BACKENDS if shutil.which(name)]
+
+
+def start_content_generation(job: dict, backend: str = "claude") -> None:
     jk = job_key(job)
-    claude_bin = shutil.which("claude")
-    if not claude_bin:
-        st.error("`claude` CLI not found in PATH. Run `which claude` to locate it.")
+    cli_bin = shutil.which(backend)
+    if not cli_bin:
+        st.error(f"`{backend}` CLI not found in PATH.")
         return
     job_dir = get_job_dir(job)
     if not job_dir:
@@ -339,7 +348,7 @@ def start_content_generation(job: dict) -> None:
         job_dir.mkdir(parents=True, exist_ok=True)
     prompt = _build_generation_prompt(job, job_dir)
     proc = subprocess.Popen(
-        [claude_bin, "--print", "--permission-mode", "bypassPermissions", prompt],
+        [cli_bin, *CLI_BACKENDS[backend], prompt],
         cwd=str(PROJECT_BASE),
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -455,18 +464,19 @@ def render_content_panel(job: dict) -> None:
             return
         status = get_content_status(job)
         has_any = any(status.values())
-        claude_bin = shutil.which("claude")
+        backend = st.session_state.get("ai_backend", "claude")
+        cli_available = bool(shutil.which(backend))
         if not has_any:
-            if not claude_bin:
-                st.warning("`claude` CLI not found in PATH — cannot auto-generate.")
+            if not cli_available:
+                st.warning(f"`{backend}` CLI not found in PATH — cannot auto-generate.")
             else:
                 if st.button("⚡ Generate content", key=f"gen_{jk}"):
-                    start_content_generation(job)
+                    start_content_generation(job, backend)
                     st.rerun()
             return
-        if not all(status.values()) and claude_bin:
+        if not all(status.values()) and cli_available:
             if st.button("🔄 Regenerate missing", key=f"regen_{jk}"):
-                start_content_generation(job)
+                start_content_generation(job, st.session_state.get("ai_backend", "claude"))
                 st.rerun()
         if status["elevator_pitch"] and job_dir:
             st.markdown("**📝 Elevator Pitch**")
@@ -514,6 +524,96 @@ def score_metric(col, score: int) -> None:
         col.error(f"Score: {score}")
 
 
+# ─── Job card renderer ────────────────────────────────────────────────────────
+
+def render_job_card(job: dict, card_idx: int, tab_prefix: str = "") -> None:
+    jk = job_key(job)
+    score = job.get("score", 0)
+    in_pipeline = "pipeline" in job
+    has_feedback = "feedback" in job
+
+    col1, col2, col3 = st.columns([4, 1, 1])
+    with col1:
+        st.markdown(f"**{job.get('company', '—')}** — {job.get('title', '—')}")
+        st.caption(f"📍 {job.get('location', '—')}  ·  Found: {job.get('date_found', '—')}")
+    score_metric(col2, score)
+    with col3:
+        if in_pipeline:
+            st.caption(f"📋 {job['pipeline'].get('status', '').replace('_', ' ')}")
+        elif has_feedback:
+            st.caption(f"⭐ {job['feedback'].get('rating', '').replace('_', ' ')}")
+
+    sources = job.get("sources", [])
+    link_col, btn_col = st.columns([4, 1])
+    with link_col:
+        if sources:
+            links = "  ·  ".join(
+                f"[{s.get('platform', 'link').capitalize()}]({s.get('url', '')})"
+                for s in sources
+                if s.get("url")
+            )
+            st.markdown(links)
+    with btn_col:
+        if not in_pipeline:
+            if st.button("📋 Save to Pipeline", key=f"{tab_prefix}save_{card_idx}"):
+                data = load_jobs()
+                save_to_pipeline(data, jk)
+                start_content_generation(job, st.session_state.get("ai_backend", "claude"))
+                st.success("Saved! Generating content...")
+                st.rerun()
+
+    with st.expander(f"Details & Actions — {job.get('company', '—')} · {job.get('title', '—')}"):
+        breakdown = job.get("score_breakdown", {})
+        if breakdown and "deal_breaker_override" not in breakdown:
+            st.markdown("**Score Breakdown**")
+            bc = st.columns(5)
+            bd_fields = [
+                ("company_scale", "Company /35"),
+                ("location", "Location /25"),
+                ("seniority", "Seniority /20"),
+                ("industry", "Industry /20"),
+                ("salary_adjustment", "Salary adj."),
+            ]
+            for col_idx, (k, label) in enumerate(bd_fields):
+                if k in breakdown:
+                    bc[col_idx].metric(label, breakdown[k])
+        elif "deal_breaker_override" in breakdown:
+            st.warning(f"Deal-breaker override: score capped at {breakdown['deal_breaker_override']}")
+
+        st.divider()
+
+        st.markdown("**Rate this job**")
+        with st.form(key=f"{tab_prefix}rate_form_{card_idx}"):
+            existing_feedback = job.get("feedback", {})
+            current_rating = existing_feedback.get("rating", FEEDBACK_RATINGS[0])
+            rating_idx = FEEDBACK_RATINGS.index(current_rating) if current_rating in FEEDBACK_RATINGS else 0
+
+            rating = st.selectbox(
+                "Rating",
+                FEEDBACK_RATINGS,
+                index=rating_idx,
+                format_func=lambda x: x.replace("_", " ").title(),
+            )
+            rating_note = st.text_input(
+                "Note (optional)",
+                value=existing_feedback.get("notes", ""),
+            )
+            current_flags = existing_feedback.get("score_flags", [])
+            flags = st.multiselect(
+                "Flag score issues",
+                SCORE_FLAGS,
+                default=current_flags,
+                format_func=lambda x: x.replace("_", " ").title(),
+            )
+            if st.form_submit_button("Save Feedback"):
+                data = load_jobs()
+                save_feedback(data, jk, rating, rating_note, flags)
+                st.success("Feedback saved!")
+                st.rerun()
+
+    st.divider()
+
+
 # ─── Page 1: Discover ─────────────────────────────────────────────────────────
 
 def discover_page():
@@ -549,7 +649,7 @@ def discover_page():
             max_value=today,
         )
 
-    # Apply filters
+    # Apply filters (used by All Jobs tab)
     filtered = []
     for j in jobs:
         score = j.get("score", 0)
@@ -577,102 +677,31 @@ def discover_page():
 
         filtered.append(j)
 
-    # Sort: today's jobs first, then by score descending
+    # Sort All Jobs: today's jobs first, then by score descending
     today_iso_val = today.isoformat()
     filtered.sort(key=lambda j: (0 if j.get("date_found") == today_iso_val else 1, -j.get("score", 0)))
 
-    st.write(f"Showing **{len(filtered)}** of {len(jobs)} jobs")
+    # Target Jobs: is_target_company == True, sorted by score descending (no sidebar filters)
+    target_jobs = sorted(
+        [j for j in jobs if j.get("is_target_company")],
+        key=lambda j: j.get("score", 0),
+        reverse=True,
+    )
 
-    for i, job in enumerate(filtered):
-        jk = job_key(job)
-        score = job.get("score", 0)
-        in_pipeline = "pipeline" in job
-        has_feedback = "feedback" in job
+    tab_target, tab_all = st.tabs(["🎯 Target Jobs", "All Jobs"])
 
-        # Card header
-        col1, col2, col3 = st.columns([4, 1, 1])
-        with col1:
-            st.markdown(f"**{job.get('company', '—')}** — {job.get('title', '—')}")
-            st.caption(f"📍 {job.get('location', '—')}  ·  Found: {job.get('date_found', '—')}")
-        score_metric(col2, score)
-        with col3:
-            if in_pipeline:
-                st.caption(f"📋 {job['pipeline'].get('status', '').replace('_', ' ')}")
-            elif has_feedback:
-                st.caption(f"⭐ {job['feedback'].get('rating', '').replace('_', ' ')}")
+    with tab_target:
+        if not target_jobs:
+            st.info("No target company jobs found. Add companies to `data/target_companies.json` and run discovery.")
+        else:
+            st.write(f"**{len(target_jobs)}** jobs from target companies")
+            for i, job in enumerate(target_jobs):
+                render_job_card(job, i, tab_prefix="target_")
 
-        # Source links + pipeline button
-        sources = job.get("sources", [])
-        link_col, btn_col = st.columns([4, 1])
-        with link_col:
-            if sources:
-                links = "  ·  ".join(
-                    f"[{s.get('platform', 'link').capitalize()}]({s.get('url', '')})"
-                    for s in sources
-                    if s.get("url")
-                )
-                st.markdown(links)
-        with btn_col:
-            if not in_pipeline:
-                if st.button("📋 Save to Pipeline", key=f"save_{i}"):
-                    data = load_jobs()
-                    save_to_pipeline(data, jk)
-                    start_content_generation(job)
-                    st.success("Saved! Generating content...")
-                    st.rerun()
-
-        # Expandable details + actions
-        with st.expander(f"Details & Actions — {job.get('company', '—')} · {job.get('title', '—')}"):
-            # Score breakdown
-            breakdown = job.get("score_breakdown", {})
-            if breakdown and "deal_breaker_override" not in breakdown:
-                st.markdown("**Score Breakdown**")
-                bc = st.columns(5)
-                bd_fields = [
-                    ("company_scale", "Company /35"),
-                    ("location", "Location /25"),
-                    ("seniority", "Seniority /20"),
-                    ("industry", "Industry /20"),
-                    ("salary_adjustment", "Salary adj."),
-                ]
-                for col_idx, (k, label) in enumerate(bd_fields):
-                    if k in breakdown:
-                        bc[col_idx].metric(label, breakdown[k])
-            elif "deal_breaker_override" in breakdown:
-                st.warning(f"Deal-breaker override: score capped at {breakdown['deal_breaker_override']}")
-
-            st.divider()
-
-            st.markdown("**Rate this job**")
-            with st.form(key=f"rate_form_{i}"):
-                existing_feedback = job.get("feedback", {})
-                current_rating = existing_feedback.get("rating", FEEDBACK_RATINGS[0])
-                rating_idx = FEEDBACK_RATINGS.index(current_rating) if current_rating in FEEDBACK_RATINGS else 0
-
-                rating = st.selectbox(
-                    "Rating",
-                    FEEDBACK_RATINGS,
-                    index=rating_idx,
-                    format_func=lambda x: x.replace("_", " ").title(),
-                )
-                rating_note = st.text_input(
-                    "Note (optional)",
-                    value=existing_feedback.get("notes", ""),
-                )
-                current_flags = existing_feedback.get("score_flags", [])
-                flags = st.multiselect(
-                    "Flag score issues",
-                    SCORE_FLAGS,
-                    default=current_flags,
-                    format_func=lambda x: x.replace("_", " ").title(),
-                )
-                if st.form_submit_button("Save Feedback"):
-                    data = load_jobs()
-                    save_feedback(data, jk, rating, rating_note, flags)
-                    st.success("Feedback saved!")
-                    st.rerun()
-
-        st.divider()
+    with tab_all:
+        st.write(f"Showing **{len(filtered)}** of {len(jobs)} jobs")
+        for i, job in enumerate(filtered):
+            render_job_card(job, i, tab_prefix="all_")
 
 
 # ─── Page 2: Pipeline ─────────────────────────────────────────────────────────
@@ -718,7 +747,7 @@ def pipeline_page():
                                 "history": [{"status": "want_to_apply", "date": today}],
                             }
                             save_jobs(jobs_data)
-                            start_content_generation(existing_job)
+                            start_content_generation(existing_job, st.session_state.get("ai_backend", "claude"))
                             st.success(f"Added **{existing_job['company']} — {existing_job['title']}** to pipeline. Generating content...")
                             st.rerun()
                     else:
@@ -760,7 +789,7 @@ def pipeline_page():
                         }
                         jobs_data["active_jobs"].append(new_job)
                         save_jobs(jobs_data)
-                        start_content_generation(new_job)
+                        start_content_generation(new_job, st.session_state.get("ai_backend", "claude"))
                         st.success(f"Added **{fetched['company']} — {fetched['title']}** to pipeline (score: {fetched.get('score', 0)}). Generating content...")
                         st.rerun()
 
@@ -807,7 +836,7 @@ def pipeline_page():
                             "history": [{"status": "want_to_apply", "date": today}],
                         }
                         save_jobs(jobs_data)
-                        start_content_generation(existing_job)
+                        start_content_generation(existing_job, st.session_state.get("ai_backend", "claude"))
                         st.session_state["manual_add_banner"] = ("success", f"Added **{existing_job['company']} — {existing_job['title']}** to pipeline. Generating content...")
                         st.session_state["manual_form_v"] = _form_v + 1
                         st.rerun()
@@ -855,7 +884,7 @@ def pipeline_page():
                     }
                     jobs_data["active_jobs"].append(new_job)
                     save_jobs(jobs_data)
-                    start_content_generation(new_job)
+                    start_content_generation(new_job, st.session_state.get("ai_backend", "claude"))
                     st.session_state["manual_add_banner"] = ("success", f"Added **{job_obj['company']} — {job_obj['title']}** to pipeline (score: {job_obj.get('score', 0)}). Generating content...")
                     st.session_state["manual_form_v"] = _form_v + 1
                     st.rerun()
@@ -1089,6 +1118,19 @@ def main():
             ["Discover", "Pipeline", "Scoring Insights"],
             label_visibility="collapsed",
         )
+        st.divider()
+        backends = available_backends()
+        if backends:
+            selected_backend = st.selectbox(
+                "AI backend",
+                backends,
+                index=0,
+                help="CLI used for content generation",
+            )
+        else:
+            selected_backend = "claude"
+            st.warning("No AI CLI found in PATH (`claude` or `codex`).")
+        st.session_state["ai_backend"] = selected_backend
 
     if page == "Discover":
         discover_page()

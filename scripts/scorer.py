@@ -373,22 +373,14 @@ def score_domain_overlap(description: str) -> int:
 
 
 def score_location(location: str, config: dict) -> int:
-    """Score location fit. Max 10. Location is no bar."""
-    if not location:
-        return 8
-
-    loc_lower = location.lower()
-
+    """Score location fit. Max 10. Only India locations score."""
+    loc_lower = (location or "").lower()
     if "india" in loc_lower or any(x in loc_lower for x in [
         "bengaluru", "bangalore", "delhi", "ncr", "gurugram", "gurgaon", "noida",
         "mumbai", "hyderabad", "pune", "chennai", "kolkata", "faridabad",
     ]):
         return 10
-    if "remote" in loc_lower:
-        return 10
-    if "hybrid" in loc_lower:
-        return 9
-    return 8  # International in-office / unknown
+    return 0
 
 
 def score_yoe_fit(description: str) -> int:
@@ -421,40 +413,16 @@ def apply_salary_adjustment(score: int, description: str, config: dict) -> int:
         return score + config["scoring"]["salary_penalty_below"]
 
 
-# US state abbreviations (all 50 + DC)
-_US_STATES_RE = re.compile(
-    r",\s*(?:AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT"
-    r"|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC)\b"
-)
-
-
-def _is_us_onsite_no_visa(location: str, description: str) -> bool:
-    """True if job is US-only on-site with no visa sponsorship mentioned."""
+def _is_not_india(location: str) -> bool:
+    """True if location is populated and not India."""
     loc_lower = (location or "").lower()
-    desc_lower = (description or "").lower()
-
-    # Must be a US location
-    is_us = bool(_US_STATES_RE.search(location or "")) or "united states" in loc_lower
-    if not is_us:
-        return False
-
-    # Exempt if remote or hybrid (check both location field and description)
-    remote_signals = ("remote", "hybrid", "work from home", "wfh")
-    if any(s in loc_lower for s in remote_signals):
-        return False
-    if any(s in desc_lower for s in remote_signals):
-        return False
-
-    # Exempt if visa sponsorship is explicitly offered
-    visa_signals = (
-        "visa sponsorship", "work authorization", "work visa",
-        "h-1b", "h1b", "immigration support", "relocation assistance",
-        "will sponsor", "we sponsor",
+    if not loc_lower:
+        return True
+    india_signals = (
+        "india", "bengaluru", "bangalore", "delhi", "ncr", "gurugram", "gurgaon",
+        "noida", "mumbai", "hyderabad", "pune", "chennai", "kolkata", "faridabad",
     )
-    if any(s in desc_lower for s in visa_signals):
-        return False
-
-    return True
+    return not any(s in loc_lower for s in india_signals)
 
 
 def check_dealbreakers(title: str, description: str, location: str = "") -> Optional[int]:
@@ -464,8 +432,8 @@ def check_dealbreakers(title: str, description: str, location: str = "") -> Opti
     """
     desc_lower = (description or "").lower()
 
-    # US on-site with no visa sponsorship — hard disqualify
-    if _is_us_onsite_no_visa(location, description):
+    # Non-India location — hard disqualify
+    if _is_not_india(location):
         return 0
 
     # "on-call" — context-aware, ignore if negated
